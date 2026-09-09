@@ -22,11 +22,16 @@ host_paths = []
 # Global source-path exclusions. No paths are excluded by default.
 exclude_paths = []
 
+# Global Docker-volume exclusions by Docker volume name. Prefer project-specific
+# exclusions when a volume belongs to only one Compose project.
+exclude_volumes = []
+
 # Optional project-specific additions/exclusions. The TOML key is the Docker
 # Compose project name as shown by `backupdock inventory`.
 # [projects."my-compose-project"]
 # extra_paths = ["/some/project-specific/path"]
 # exclude_paths = ["/path/that/should/not/be/backed-up"]
+# exclude_volumes = ["my-compose-project_large_rebuildable_data"]
 
 [retention]
 after_backup = false
