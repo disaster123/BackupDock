@@ -1,0 +1,43 @@
+# BackupDock has no built-in assumptions about where Docker data lives.
+# Bind mounts and Docker volumes are discovered from the Docker daemon.
+
+restic:
+  # These can also be supplied through the normal RESTIC_REPOSITORY and
+  # RESTIC_PASSWORD_FILE environment variables.
+  repository: "sftp:backup@example:/backups/docker-host"
+  password_file: "/root/.config/restic/password"
+
+  # Optional arguments passed only to `restic backup`.
+  backup_args: []
+
+backup:
+  state_dir: "/var/lib/backupdock"
+  stop_timeout_seconds: 30
+  include_compose_metadata: true
+
+  # Static host data that is not managed by Docker. These paths are backed up
+  # separately without stopping any container. Leave empty unless needed.
+  host_paths: []
+
+  # Global host-path exclusions. No paths are excluded by default.
+  exclude_paths: []
+
+  # Global Docker volume-name exclusions. Prefer project-specific exclusions
+  # when only one Compose project should omit a volume.
+  exclude_volumes: []
+
+projects:
+  # Example project-specific additions/exclusions. The key must match the
+  # Compose project name shown by `backupdock inventory`.
+  my-compose-project:
+    extra_paths: []
+    exclude_paths: []
+    exclude_volumes:
+      - "my-compose-project_large-backups"
+
+retention:
+  after_backup: false
+  prune: false
+  keep_daily: 14
+  keep_weekly: 8
+  keep_monthly: 12
