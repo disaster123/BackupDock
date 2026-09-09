@@ -26,12 +26,14 @@ class BackupConfig:
     include_compose_metadata: bool = True
     host_paths: tuple[Path, ...] = ()
     exclude_paths: tuple[Path, ...] = ()
+    exclude_volumes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class ProjectConfig:
     extra_paths: tuple[Path, ...] = ()
     exclude_paths: tuple[Path, ...] = ()
+    exclude_volumes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,12 +67,16 @@ class AppConfig:
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
 
 
-def _paths(values: Any) -> tuple[Path, ...]:
+def _strings(values: Any, *, field_name: str) -> tuple[str, ...]:
     if values is None:
         return ()
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-        raise ValueError("Path lists must be arrays of strings")
-    return tuple(Path(value).expanduser() for value in values)
+        raise ValueError(f"{field_name} must be an array of strings")
+    return tuple(values)
+
+
+def _paths(values: Any) -> tuple[Path, ...]:
+    return tuple(Path(value).expanduser() for value in _strings(values, field_name="Path lists"))
 
 
 def _optional_path(value: Any) -> Path | None:
@@ -129,6 +135,10 @@ def load_config(path: Path | None = None) -> AppConfig:
         project_configs[project_name] = ProjectConfig(
             extra_paths=_paths(project_data.get("extra_paths")),
             exclude_paths=_paths(project_data.get("exclude_paths")),
+            exclude_volumes=_strings(
+                project_data.get("exclude_volumes"),
+                field_name=f"projects.{project_name}.exclude_volumes",
+            ),
         )
 
     return AppConfig(
@@ -145,6 +155,10 @@ def load_config(path: Path | None = None) -> AppConfig:
             include_compose_metadata=bool(backup_data.get("include_compose_metadata", True)),
             host_paths=_paths(backup_data.get("host_paths")),
             exclude_paths=_paths(backup_data.get("exclude_paths")),
+            exclude_volumes=_strings(
+                backup_data.get("exclude_volumes"),
+                field_name="backup.exclude_volumes",
+            ),
         ),
         retention=RetentionConfig(
             after_backup=bool(retention_data.get("after_backup", False)),
