@@ -29,7 +29,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="backupdock",
         description="Docker-aware, consistent backups powered by Restic.",
     )
-    parser.add_argument("--config", type=Path, help="Configuration file (default: /etc/backupdock/config.toml)")
+    parser.add_argument("--config", type=Path, help="Configuration file (default: /etc/backupdock/config.yaml)")
     parser.add_argument("--version", action="version", version=f"BackupDock {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
