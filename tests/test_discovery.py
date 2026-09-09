@@ -93,6 +93,20 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaises(DiscoveryError):
             discover_groups([first, second], AppConfig())
 
+    def test_shared_read_only_bind_does_not_create_cross_project_conflict(self) -> None:
+        first = container(
+            "first",
+            project="alpha",
+            mounts=(MountInfo("bind", "/etc/localtime", "/etc/localtime", read_only=True),),
+        )
+        second = container(
+            "second",
+            project="beta",
+            mounts=(MountInfo("bind", "/etc/localtime", "/etc/localtime", read_only=True),),
+        )
+        groups = discover_groups([first, second], AppConfig())
+        self.assertEqual(len(groups), 2)
+
     def test_global_exclusion_is_not_hardcoded(self) -> None:
         config = AppConfig(backup=BackupConfig(exclude_paths=(Path("/ignore"),)))
         groups = discover_groups(
