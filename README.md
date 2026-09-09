@@ -125,6 +125,26 @@ host_paths = ["/etc/some-static-config"]
 
 Do not use `host_paths` for live container data. Attach such data to the relevant project instead.
 
+### Excluding Docker volumes
+
+Docker volumes can be excluded by their Docker volume name. This avoids depending on Docker's host-side mount path.
+
+Prefer a project-specific exclusion when the volume belongs to one Compose project:
+
+```toml
+[projects."pve-backup-server-dockerfiles"]
+exclude_volumes = ["pve-backup-server-dockerfiles_backups"]
+```
+
+The other volumes of that project remain part of the backup. Volume names can be copied directly from `backupdock inventory`.
+
+A global exclusion is also available when needed:
+
+```toml
+[backup]
+exclude_volumes = ["some_globally_ignored_volume"]
+```
+
 ## CLI
 
 Inspect what BackupDock would protect before running the first backup:
