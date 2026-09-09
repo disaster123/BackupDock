@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
+import stat
 from pathlib import Path
 
 from backupdock.config import AppConfig
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
+
+
+logger = logging.getLogger(__name__)
 
 
 class DiscoveryError(RuntimeError):
@@ -28,6 +33,14 @@ def _excluded(path: Path, exclusions: tuple[Path, ...]) -> bool:
         if candidate == excluded_path or excluded_path in candidate.parents:
             return True
     return False
+
+
+def _special_bind_source(path: Path) -> bool:
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return False
+    return not (stat.S_ISDIR(mode) or stat.S_ISREG(mode))
 
 
 def _group_key(container: ContainerInfo) -> tuple[str, str, str | None]:
@@ -87,6 +100,9 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                 source_path = Path(mount.source)
                 if _excluded(source_path, exclusions):
                     continue
+                if mount.type == "bind" and _special_bind_source(source_path):
+                    logger.warning("Ignoring non-file bind mount source: %s", source_path)
+                    continue
 
                 sources.append(
                     BackupSource(
@@ -95,6 +111,7 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                         container=container.name,
                         destination=mount.destination,
                         volume_name=mount.volume_name,
+                        read_only=mount.read_only,
                         required=True,
                     )
                 )
@@ -133,6 +150,8 @@ def validate_no_cross_group_storage(groups: list[BackupGroup]) -> None:
             if first_group.key == second_group.key:
                 continue
             if paths_overlap(first_source.path, second_source.path):
+                if first_source.read_only and second_source.read_only:
+                    continue
                 conflicts.add(
                     (
                         first_group.name,
