@@ -33,6 +33,7 @@ class BackupSource:
     container: str | None = None
     destination: str | None = None
     volume_name: str | None = None
+    read_only: bool = False
     required: bool = True
 
     @property
