@@ -6,6 +6,7 @@ VENV_DIR="${INSTALL_DIR}/venv"
 BIN_LINK="/usr/bin/backupdock"
 CONFIG_DIR="/etc/backupdock"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+LEGACY_CONFIG_FILE="${CONFIG_DIR}/config.toml"
 STATE_DIR="/var/lib/backupdock"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -24,6 +25,10 @@ fi
 
 [[ -f "${SOURCE_DIR}/pyproject.toml" ]] || fail "pyproject.toml not found next to install.sh"
 [[ -f "${SOURCE_DIR}/config.yaml.example" ]] || fail "config.yaml.example not found next to install.sh"
+
+if [[ ! -e "${CONFIG_FILE}" && -e "${LEGACY_CONFIG_FILE}" ]]; then
+    fail "legacy ${LEGACY_CONFIG_FILE} found; BackupDock 0.2+ uses YAML. Migrate it to ${CONFIG_FILE} before installing"
+fi
 
 venv_available() {
     command -v python3 >/dev/null 2>&1 || return 1
