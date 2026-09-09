@@ -79,6 +79,30 @@ class DiscoveryTests(unittest.TestCase):
         groups = discover_groups([container("web", project="app")], config)
         self.assertIn(Path("/custom/app-extra"), {source.path for source in groups[0].sources})
 
+    def test_project_volume_exclusion_keeps_other_volumes(self) -> None:
+        mounts = (
+            MountInfo("volume", "/docker/volumes/backups/_data", "/backups", "app_backups"),
+            MountInfo("volume", "/docker/volumes/database/_data", "/var/lib/db", "app_database"),
+        )
+        config = AppConfig(
+            projects={"app": ProjectConfig(exclude_volumes=("app_backups",))},
+        )
+        groups = discover_groups([container("db", project="app", mounts=mounts)], config)
+        volume_names = {source.volume_name for source in groups[0].sources if source.kind == "volume"}
+        self.assertEqual(volume_names, {"app_database"})
+
+    def test_global_volume_exclusion_applies_to_all_projects(self) -> None:
+        mount = MountInfo("volume", "/docker/volumes/cache/_data", "/cache", "shared_cache")
+        config = AppConfig(backup=BackupConfig(exclude_volumes=("shared_cache",)))
+        groups = discover_groups(
+            [
+                container("alpha", project="alpha", mounts=(mount,)),
+                container("beta", project="beta", mounts=(mount,)),
+            ],
+            config,
+        )
+        self.assertTrue(all(not group.sources for group in groups))
+
     def test_overlapping_storage_across_compose_projects_fails_safe(self) -> None:
         first = container(
             "first",
