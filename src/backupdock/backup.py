@@ -87,11 +87,11 @@ class BackupOrchestrator:
         os.replace(temporary, manifest_path)
         return manifest_path
 
-    def _restart(self, stopped_ids: list[str]) -> list[str]:
+    def _restart(self, restart_candidates: list[str]) -> list[str]:
         errors: list[str] = []
-        for container_id in reversed(stopped_ids):
+        for container_id in reversed(restart_candidates):
             try:
-                self.docker.start(container_id)
+                self.docker.ensure_running(container_id)
             except Exception as exc:
                 errors.append(f"{container_id[:12]}: {exc}")
         return errors
@@ -103,18 +103,18 @@ class BackupOrchestrator:
 
         has_persistent_data = any(source.persistent for source in available_sources)
         running = group.running_containers if has_persistent_data else []
-        stopped_ids: list[str] = []
+        restart_candidates: list[str] = []
         primary_error: BaseException | None = None
 
         try:
             for container in running:
+                restart_candidates.append(container.id)
                 self.docker.stop(container.id, self.config.backup.stop_timeout_seconds)
-                stopped_ids.append(container.id)
             self.restic.backup(paths, group.key)
         except BaseException as exc:
             primary_error = exc
         finally:
-            restart_errors = self._restart(stopped_ids)
+            restart_errors = self._restart(restart_candidates)
 
         if restart_errors:
             message = "Failed to restore the original running state: " + "; ".join(restart_errors)
