@@ -81,11 +81,14 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
         ).containers.append(container)
 
     global_exclusions = config.backup.exclude_paths
+    global_volume_exclusions = set(config.backup.exclude_volumes)
 
     for group in grouped.values():
         project_config = config.projects.get(group.compose_project or group.name)
         project_exclusions = project_config.exclude_paths if project_config else ()
+        project_volume_exclusions = set(project_config.exclude_volumes) if project_config else set()
         exclusions = global_exclusions + project_exclusions
+        excluded_volumes = global_volume_exclusions | project_volume_exclusions
         sources: list[BackupSource] = []
 
         for container in group.containers:
@@ -95,6 +98,8 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                 if mount.type not in {"bind", "volume"}:
                     continue
                 if not mount.source:
+                    continue
+                if mount.type == "volume" and mount.volume_name in excluded_volumes:
                     continue
 
                 source_path = Path(mount.source)
