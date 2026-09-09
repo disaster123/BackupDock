@@ -6,4 +6,4 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/backupdock backup
+ExecStart=/usr/bin/backupdock backup
