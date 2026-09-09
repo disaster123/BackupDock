@@ -41,6 +41,12 @@ class FakeDocker:
             raise RuntimeError("start failed")
         self.started.append(container_id)
 
+    def ensure_running(self, container_id: str) -> None:
+        if container_id == self.fail_start:
+            raise RuntimeError("start failed")
+        if container_id in self.stopped:
+            self.started.append(container_id)
+
 
 class FakeRestic:
     def __init__(self, fail_backup: bool = False) -> None:
