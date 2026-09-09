@@ -42,7 +42,7 @@ Other Compose projects remain online while a project is being backed up.
 
 A container without Compose metadata becomes its own standalone backup group.
 
-If persistent paths overlap across two different groups, BackupDock aborts discovery. It will never decide on its own to stop an unrelated Compose project.
+If writable persistent paths overlap across two different groups, BackupDock aborts discovery. It will never decide on its own to stop an unrelated Compose project. Shared read-only bind mounts are allowed.
 
 ## What is discovered
 
@@ -55,7 +55,7 @@ BackupDock reads the Docker daemon and discovers:
 - Compose config-file metadata exposed by Docker Compose
 - the Compose working-directory `.env` file when present
 
-`tmpfs` mounts are ignored because they are not persistent.
+`tmpfs` and non-file bind sources such as sockets or FIFOs are ignored because they are not persistent backup data.
 
 There are **no built-in paths such as `/srv/files`, `/srv/docker-config`, `/opt/docker`, or `/var/lib/docker/volumes`**. Volume source paths come from Docker itself.
 
@@ -64,10 +64,63 @@ There are **no built-in paths such as `/srv/files`, `/srv/docker-config`, `/opt/
 - Linux
 - Python 3.11+
 - Docker Engine
-- Restic available in `PATH`
+- Restic
 - permission to access the Docker daemon and the host-side persistent data (normally run as root)
 
+Docker itself is never installed or modified by BackupDock.
+
+## Installation
+
+Clone the repository and run the installer as root:
+
+```bash
+git clone https://github.com/disaster123/BackupDock.git
+cd BackupDock
+sudo ./install.sh
+```
+
+The installer:
+
+- installs missing Python/venv and Restic system dependencies on supported package managers,
+- creates `/opt/backupdock/venv`,
+- installs/upgrades BackupDock and all Python dependencies only inside that virtual environment,
+- creates `/usr/bin/backupdock` as a symlink to the venv command,
+- creates `/etc/backupdock/config.yaml` from `config.yaml.example` on first installation,
+- never overwrites an existing `/etc/backupdock/config.yaml`,
+- creates `/var/lib/backupdock` for BackupDock state.
+
+Running the installer again after updating the Git checkout upgrades the installed version:
+
+```bash
+git pull
+sudo ./install.sh
+```
+
+Then BackupDock can be called directly:
+
+```bash
+sudo backupdock inventory
+```
+
+### Uninstall
+
+Remove BackupDock itself while preserving configuration and state:
+
+```bash
+sudo ./uninstall.sh
+```
+
+Remove BackupDock, configuration and state:
+
+```bash
+sudo ./uninstall.sh --purge
+```
+
+The uninstaller deliberately does not remove shared system packages such as Python or Restic.
+
 ## Installation for development
+
+For development, a local virtual environment can still be used:
 
 ```bash
 python3 -m venv .venv
@@ -75,25 +128,25 @@ python3 -m venv .venv
 pip install -e .
 ```
 
-Restic is intentionally an external dependency and is not bundled.
-
 ## Configuration
 
 The default configuration path is:
 
 ```text
-/etc/backupdock/config.toml
+/etc/backupdock/config.yaml
 ```
 
 A different file can be selected with `--config`.
 
+The repository contains [`config.yaml.example`](config.yaml.example). The installer copies it to `/etc/backupdock/config.yaml` only when that file does not already exist.
+
 Minimal example using Restic's standard environment variables:
 
-```toml
-[backup]
-state_dir = "/var/lib/backupdock"
-stop_timeout_seconds = 30
-include_compose_metadata = true
+```yaml
+backup:
+  state_dir: "/var/lib/backupdock"
+  stop_timeout_seconds: 30
+  include_compose_metadata: true
 ```
 
 Then provide the normal Restic environment:
@@ -103,7 +156,13 @@ export RESTIC_REPOSITORY='sftp:backup@example:/backups/docker-host'
 export RESTIC_PASSWORD_FILE='/root/.config/restic/password'
 ```
 
-Alternatively the repository can be configured in TOML. See [`examples/config.toml`](examples/config.toml).
+Alternatively the repository and password file can be configured directly:
+
+```yaml
+restic:
+  repository: "sftp:backup@example:/backups/docker-host"
+  password_file: "/root/.config/restic/password"
+```
 
 ### Additional paths
 
@@ -111,16 +170,19 @@ Docker-managed persistent data should normally require no configuration.
 
 Project-specific data that Docker cannot discover can be attached explicitly:
 
-```toml
-[projects."paperless"]
-extra_paths = ["/some/additional/path"]
+```yaml
+projects:
+  paperless:
+    extra_paths:
+      - "/some/additional/path"
 ```
 
 Static host paths can be backed up separately without stopping containers:
 
-```toml
-[backup]
-host_paths = ["/etc/some-static-config"]
+```yaml
+backup:
+  host_paths:
+    - "/etc/some-static-config"
 ```
 
 Do not use `host_paths` for live container data. Attach such data to the relevant project instead.
@@ -131,18 +193,21 @@ Docker volumes can be excluded by their Docker volume name. This avoids dependin
 
 Prefer a project-specific exclusion when the volume belongs to one Compose project:
 
-```toml
-[projects."pve-backup-server-dockerfiles"]
-exclude_volumes = ["pve-backup-server-dockerfiles_backups"]
+```yaml
+projects:
+  pve-backup-server-dockerfiles:
+    exclude_volumes:
+      - "pve-backup-server-dockerfiles_backups"
 ```
 
 The other volumes of that project remain part of the backup. Volume names can be copied directly from `backupdock inventory`.
 
 A global exclusion is also available when needed:
 
-```toml
-[backup]
-exclude_volumes = ["some_globally_ignored_volume"]
+```yaml
+backup:
+  exclude_volumes:
+    - "some_globally_ignored_volume"
 ```
 
 ## CLI
@@ -201,7 +266,7 @@ Before any container is stopped, BackupDock:
 
 1. discovers every container and persistent mount,
 2. groups containers into Compose/standalone consistency groups,
-3. checks for storage overlap between groups,
+3. checks for unsafe writable storage overlap between groups,
 4. verifies the Restic repository is reachable.
 
 For each group it records which containers are running. The group is stopped and backed up inside a guarded transaction. Restart is attempted even after a backup failure, interruption, or partial stop failure.
@@ -212,16 +277,16 @@ A manifest describing the group, containers, mount destinations, volume names, a
 
 Retention is optional. Example:
 
-```toml
-[retention]
-after_backup = false
-prune = false
-keep_daily = 14
-keep_weekly = 8
-keep_monthly = 12
+```yaml
+retention:
+  after_backup: false
+  prune: false
+  keep_daily: 14
+  keep_weekly: 8
+  keep_monthly: 12
 ```
 
-Keeping `after_backup = false` avoids making every normal backup run perform repository maintenance. `backupdock forget` can be scheduled independently.
+Keeping `after_backup: false` avoids making every normal backup run perform repository maintenance. `backupdock forget` can be scheduled independently.
 
 ## Scheduling
 
