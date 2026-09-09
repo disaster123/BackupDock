@@ -2,10 +2,10 @@
 # Bind mounts and Docker volumes are discovered from the Docker daemon.
 
 restic:
-  # These can also be supplied through the normal RESTIC_REPOSITORY and
+  # Either uncomment these values or use the standard RESTIC_REPOSITORY and
   # RESTIC_PASSWORD_FILE environment variables.
-  repository: "sftp:backup@example:/backups/docker-host"
-  password_file: "/root/.config/restic/password"
+  # repository: "sftp:backup@example:/backups/docker-host"
+  # password_file: "/root/.config/restic/password"
 
   # Optional arguments passed only to `restic backup`.
   backup_args: []
@@ -26,14 +26,15 @@ backup:
   # when only one Compose project should omit a volume.
   exclude_volumes: []
 
-projects:
-  # Example project-specific additions/exclusions. The key must match the
-  # Compose project name shown by `backupdock inventory`.
-  my-compose-project:
-    extra_paths: []
-    exclude_paths: []
-    exclude_volumes:
-      - "my-compose-project_large-backups"
+# Add entries below when a Compose project needs additional paths or exclusions.
+# The key must match the Compose project name shown by `backupdock inventory`.
+projects: {}
+# projects:
+#   my-compose-project:
+#     extra_paths: []
+#     exclude_paths: []
+#     exclude_volumes:
+#       - "my-compose-project_large-backups"
 
 retention:
   after_backup: false
