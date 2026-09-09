@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
 
-DEFAULT_CONFIG_PATH = Path("/etc/backupdock/config.toml")
+
+DEFAULT_CONFIG_PATH = Path("/etc/backupdock/config.yaml")
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,16 +68,24 @@ class AppConfig:
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
 
 
+def _mapping(value: Any, *, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError(f"{field_name} must be a mapping")
+    return value
+
+
 def _strings(values: Any, *, field_name: str) -> tuple[str, ...]:
     if values is None:
         return ()
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-        raise ValueError(f"{field_name} must be an array of strings")
+        raise ValueError(f"{field_name} must be a list of strings")
     return tuple(values)
 
 
-def _paths(values: Any) -> tuple[Path, ...]:
-    return tuple(Path(value).expanduser() for value in _strings(values, field_name="Path lists"))
+def _paths(values: Any, *, field_name: str) -> tuple[Path, ...]:
+    return tuple(Path(value).expanduser() for value in _strings(values, field_name=field_name))
 
 
 def _optional_path(value: Any) -> Path | None:
@@ -95,6 +104,14 @@ def _optional_int(value: Any) -> int | None:
     return value
 
 
+def _boolean(value: Any, *, field_name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be true or false")
+    return value
+
+
 def load_config(path: Path | None = None) -> AppConfig:
     config_path = path or DEFAULT_CONFIG_PATH
     explicit_path = path is not None
@@ -104,65 +121,93 @@ def load_config(path: Path | None = None) -> AppConfig:
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
         return AppConfig()
 
-    with config_path.open("rb") as handle:
-        data = tomllib.load(handle)
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw_data = yaml.safe_load(handle)
 
-    restic_data = data.get("restic", {})
-    backup_data = data.get("backup", {})
-    retention_data = data.get("retention", {})
-    projects_data = data.get("projects", {})
-
-    if not isinstance(projects_data, dict):
-        raise ValueError("[projects] must be a TOML table")
+    data = _mapping(raw_data, field_name="Configuration root")
+    restic_data = _mapping(data.get("restic"), field_name="restic")
+    backup_data = _mapping(data.get("backup"), field_name="backup")
+    retention_data = _mapping(data.get("retention"), field_name="retention")
+    projects_data = _mapping(data.get("projects"), field_name="projects")
 
     repository = restic_data.get("repository") or os.environ.get("RESTIC_REPOSITORY")
+    if repository is not None and not isinstance(repository, str):
+        raise ValueError("restic.repository must be a string")
+
     password_file_raw = restic_data.get("password_file")
     if password_file_raw is None and os.environ.get("RESTIC_PASSWORD_FILE"):
         password_file_raw = os.environ["RESTIC_PASSWORD_FILE"]
 
-    backup_args = restic_data.get("backup_args", [])
-    if not isinstance(backup_args, list) or not all(isinstance(value, str) for value in backup_args):
-        raise ValueError("restic.backup_args must be an array of strings")
+    backup_args = _strings(restic_data.get("backup_args"), field_name="restic.backup_args")
 
     stop_timeout = backup_data.get("stop_timeout_seconds", 30)
     if not isinstance(stop_timeout, int) or isinstance(stop_timeout, bool) or stop_timeout < 1:
         raise ValueError("backup.stop_timeout_seconds must be a positive integer")
 
     project_configs: dict[str, ProjectConfig] = {}
-    for project_name, project_data in projects_data.items():
-        if not isinstance(project_data, dict):
-            raise ValueError(f"projects.{project_name} must be a TOML table")
+    for project_name, project_raw in projects_data.items():
+        project_data = _mapping(project_raw, field_name=f"projects.{project_name}")
         project_configs[project_name] = ProjectConfig(
-            extra_paths=_paths(project_data.get("extra_paths")),
-            exclude_paths=_paths(project_data.get("exclude_paths")),
+            extra_paths=_paths(
+                project_data.get("extra_paths"),
+                field_name=f"projects.{project_name}.extra_paths",
+            ),
+            exclude_paths=_paths(
+                project_data.get("exclude_paths"),
+                field_name=f"projects.{project_name}.exclude_paths",
+            ),
             exclude_volumes=_strings(
                 project_data.get("exclude_volumes"),
                 field_name=f"projects.{project_name}.exclude_volumes",
             ),
         )
 
+    binary = restic_data.get("binary", "restic")
+    if not isinstance(binary, str):
+        raise ValueError("restic.binary must be a string")
+
+    host = restic_data.get("host")
+    if host is not None and not isinstance(host, str):
+        raise ValueError("restic.host must be a string")
+
+    state_dir_raw = backup_data.get("state_dir", "/var/lib/backupdock")
+    if not isinstance(state_dir_raw, str):
+        raise ValueError("backup.state_dir must be a string")
+
     return AppConfig(
         restic=ResticConfig(
-            binary=str(restic_data.get("binary", "restic")),
+            binary=binary,
             repository=repository,
             password_file=_optional_path(password_file_raw),
-            backup_args=tuple(backup_args),
-            host=restic_data.get("host"),
+            backup_args=backup_args,
+            host=host,
         ),
         backup=BackupConfig(
-            state_dir=Path(str(backup_data.get("state_dir", "/var/lib/backupdock"))).expanduser(),
+            state_dir=Path(state_dir_raw).expanduser(),
             stop_timeout_seconds=stop_timeout,
-            include_compose_metadata=bool(backup_data.get("include_compose_metadata", True)),
-            host_paths=_paths(backup_data.get("host_paths")),
-            exclude_paths=_paths(backup_data.get("exclude_paths")),
+            include_compose_metadata=_boolean(
+                backup_data.get("include_compose_metadata"),
+                field_name="backup.include_compose_metadata",
+                default=True,
+            ),
+            host_paths=_paths(backup_data.get("host_paths"), field_name="backup.host_paths"),
+            exclude_paths=_paths(backup_data.get("exclude_paths"), field_name="backup.exclude_paths"),
             exclude_volumes=_strings(
                 backup_data.get("exclude_volumes"),
                 field_name="backup.exclude_volumes",
             ),
         ),
         retention=RetentionConfig(
-            after_backup=bool(retention_data.get("after_backup", False)),
-            prune=bool(retention_data.get("prune", False)),
+            after_backup=_boolean(
+                retention_data.get("after_backup"),
+                field_name="retention.after_backup",
+                default=False,
+            ),
+            prune=_boolean(
+                retention_data.get("prune"),
+                field_name="retention.prune",
+                default=False,
+            ),
             keep_last=_optional_int(retention_data.get("keep_last")),
             keep_daily=_optional_int(retention_data.get("keep_daily")),
             keep_weekly=_optional_int(retention_data.get("keep_weekly")),
