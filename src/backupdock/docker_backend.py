@@ -81,6 +81,12 @@ class DockerBackend:
     def start(self, container_id: str) -> None:
         self._client.containers.get(container_id).start()
 
+    def ensure_running(self, container_id: str) -> None:
+        container = self._client.containers.get(container_id)
+        container.reload()
+        if not bool((container.attrs.get("State") or {}).get("Running", False)):
+            container.start()
+
     def close(self) -> None:
         self._client.close()
 
@@ -95,4 +101,7 @@ class FakeDockerBackendProtocol:
         raise NotImplementedError
 
     def start(self, container_id: str) -> None:
+        raise NotImplementedError
+
+    def ensure_running(self, container_id: str) -> None:
         raise NotImplementedError
