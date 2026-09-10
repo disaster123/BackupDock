@@ -6,12 +6,17 @@ VENV_DIR="${INSTALL_DIR}/venv"
 BIN_LINK="/usr/bin/backupdock"
 CONFIG_DIR="/etc/backupdock"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+CONFIG_EXAMPLE_FILE="${CONFIG_DIR}/config.yaml.example"
 LEGACY_CONFIG_FILE="${CONFIG_DIR}/config.toml"
 STATE_DIR="/var/lib/backupdock"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 log() {
     printf 'BackupDock installer: %s\n' "$*"
+}
+
+warn() {
+    printf 'BackupDock installer: warning: %s\n' "$*" >&2
 }
 
 fail() {
@@ -25,10 +30,6 @@ fi
 
 [[ -f "${SOURCE_DIR}/pyproject.toml" ]] || fail "pyproject.toml not found next to install.sh"
 [[ -f "${SOURCE_DIR}/config.yaml.example" ]] || fail "config.yaml.example not found next to install.sh"
-
-if [[ ! -e "${CONFIG_FILE}" && -e "${LEGACY_CONFIG_FILE}" ]]; then
-    fail "legacy ${LEGACY_CONFIG_FILE} found; BackupDock 0.2+ uses YAML. Migrate it to ${CONFIG_FILE} before installing"
-fi
 
 venv_available() {
     command -v python3 >/dev/null 2>&1 || return 1
@@ -87,19 +88,23 @@ log "installing/updating BackupDock inside the virtual environment"
 ln -sfn "${VENV_DIR}/bin/backupdock" "${BIN_LINK}"
 
 install -d -m 0755 "${CONFIG_DIR}"
+install -m 0644 "${SOURCE_DIR}/config.yaml.example" "${CONFIG_EXAMPLE_FILE}"
+log "installed/updated example configuration at ${CONFIG_EXAMPLE_FILE}"
+
 if [[ ! -e "${CONFIG_FILE}" ]]; then
-    install -m 0600 "${SOURCE_DIR}/config.yaml.example" "${CONFIG_FILE}"
-    log "created ${CONFIG_FILE} from config.yaml.example"
-else
-    log "preserving existing ${CONFIG_FILE}"
+    warn "${CONFIG_FILE} does not exist; copy and edit ${CONFIG_EXAMPLE_FILE} before running backups"
+fi
+if [[ -e "${LEGACY_CONFIG_FILE}" ]]; then
+    warn "legacy ${LEGACY_CONFIG_FILE} found; BackupDock 0.2+ uses YAML"
 fi
 
 install -d -m 0700 "${STATE_DIR}"
 
 if ! "${VENV_DIR}/bin/python" -c 'import docker; client = docker.from_env(); client.ping(); client.close()' >/dev/null 2>&1; then
-    log "warning: Docker daemon is not reachable with the current environment; installation itself completed"
+    warn "Docker daemon is not reachable with the current environment; installation itself completed"
 fi
 
 log "installed $("${BIN_LINK}" --version)"
 log "command: ${BIN_LINK}"
+log "configuration example: ${CONFIG_EXAMPLE_FILE}"
 log "configuration: ${CONFIG_FILE}"
