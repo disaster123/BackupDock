@@ -78,6 +78,15 @@ class BackupOrchestrator:
         self.dry_run = dry_run
         self.preseed = preseed
 
+    def _status(self, message: str) -> None:
+        if not self.dry_run:
+            print(message, flush=True)
+
+    @staticmethod
+    def _container_label(container) -> str:
+        service = f" (service={container.compose_service})" if container.compose_service else ""
+        return f"{container.name}{service}"
+
     def _write_manifest(self, group: BackupGroup) -> Path:
         manifest_dir = self.config.backup.state_dir / "manifests"
         manifest_path = manifest_dir / f"{_slug(group.key)}.json"
@@ -108,13 +117,16 @@ class BackupOrchestrator:
         os.replace(temporary, manifest_path)
         return manifest_path
 
-    def _restart(self, restart_candidates: list[str]) -> list[str]:
+    def _restart(self, group_key: str, restart_candidates: list) -> list[str]:
         errors: list[str] = []
-        for container_id in reversed(restart_candidates):
+        for container in reversed(restart_candidates):
+            self._status(
+                f"[{group_key}] ensuring container {self._container_label(container)} is running"
+            )
             try:
-                self.docker.ensure_running(container_id)
+                self.docker.ensure_running(container.id)
             except Exception as exc:
-                errors.append(f"{container_id[:12]}: {exc}")
+                errors.append(f"{container.id[:12]}: {exc}")
         return errors
 
     def _validate_safety(
@@ -187,6 +199,7 @@ class BackupOrchestrator:
             raise BackupError("\n".join(lines))
 
     def backup_group(self, group: BackupGroup) -> None:
+        self._status(f"[{group.key}] preparing")
         available_sources = [source for source in group.sources if _usable_source(source)]
         manifest_path = self._write_manifest(group)
         paths = _minimal_backup_paths(available_sources + [BackupSource(manifest_path, "manifest")])
@@ -211,21 +224,26 @@ class BackupOrchestrator:
             if self.dry_run:
                 print(f"DRY-RUN preseed backup group {group.key} while containers remain running")
             else:
-                logger.info("Preseeding backup group %s while containers remain running", group.key)
+                self._status(f"[{group.key}] starting preseed; containers remain running")
             self.restic.backup(paths, group.key, preseed=True)
 
-        restart_candidates: list[str] = []
+        restart_candidates: list = []
         primary_error: BaseException | None = None
 
         try:
             for container in running:
-                restart_candidates.append(container.id)
+                restart_candidates.append(container)
+                self._status(
+                    f"[{group.key}] stopping container {self._container_label(container)}"
+                )
                 self.docker.stop(container.id)
+            phase = "consistent backup" if running else "backup"
+            self._status(f"[{group.key}] starting {phase}")
             self.restic.backup(paths, group.key)
         except BaseException as exc:
             primary_error = exc
         finally:
-            restart_errors = self._restart(restart_candidates)
+            restart_errors = self._restart(group.key, restart_candidates)
 
         if restart_errors:
             message = "Failed to restore the original running state: " + "; ".join(restart_errors)
@@ -234,12 +252,15 @@ class BackupOrchestrator:
             raise BackupError(message) from primary_error
         if primary_error is not None:
             raise primary_error
+        self._status(f"[{group.key}] complete")
 
     def backup_host_paths(self, sources: list[BackupSource]) -> None:
         available = [source for source in sources if _usable_source(source)]
         if not available:
             return
+        self._status("[host] starting backup")
         self.restic.backup(_minimal_backup_paths(available), "host")
+        self._status("[host] complete")
 
     def run(
         self,
@@ -248,10 +269,15 @@ class BackupOrchestrator:
         *,
         observed_groups: list[BackupGroup] | None = None,
     ) -> None:
+        self._status("BackupDock: validating backup safety")
         self._validate_safety(groups, host_sources, observed_groups or groups)
+        self._status("BackupDock: checking Restic repository")
         self.restic.preflight()
+        self._status("BackupDock: Restic repository ready")
         for group in groups:
             self.backup_group(group)
         self.backup_host_paths(host_sources)
         if self.config.retention.after_backup and self.config.retention.configured():
+            self._status("BackupDock: applying retention policy")
             self.restic.forget(self.config.retention)
+        self._status("BackupDock: backup run complete")
