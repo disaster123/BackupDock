@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import shutil
 import signal
 import sys
-from dataclasses import replace
+import tempfile
 from pathlib import Path
 
 from backupdock import __version__
 from backupdock.backup import BackupOrchestrator
-from backupdock.config import AppConfig, load_config
+from backupdock.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from backupdock.discovery import DiscoveryError, discover_groups, host_sources
 from backupdock.docker_backend import DockerBackend
 from backupdock.locking import LockError, ProcessLock
 from backupdock.models import BackupSource
-from backupdock.remote import RemoteBackupController, RemoteBackupError
+from backupdock.remote import REMOTE_PROTOCOL_VERSION, RemoteBackupController, RemoteBackupError
 from backupdock.restic import ResticError, ResticRunner
+
+
+SOURCE_RUNTIME_DIR = Path("/run/backupdock")
 
 
 class BackupInterrupted(RuntimeError):
@@ -51,11 +56,11 @@ def _parser() -> argparse.ArgumentParser:
     remote_parser.add_argument("--project", action="append", default=[], help="Back up only this Compose project or standalone group name")
     remote_parser.add_argument("--dry-run", action="store_true", help="Run the source backup in dry-run mode")
 
-    source_parser = subparsers.add_parser(
-        "source-backup",
-        help="Source-side entry point used by remote-backup",
-    )
-    source_parser.add_argument("--repository", required=True, help=argparse.SUPPRESS)
+    source_info_parser = subparsers.add_parser("source-info", help=argparse.SUPPRESS)
+    source_info_parser.set_defaults(_internal_source_command=True)
+
+    source_parser = subparsers.add_parser("source-backup", help=argparse.SUPPRESS)
+    source_parser.set_defaults(_internal_source_command=True)
     source_parser.add_argument("--project", action="append", default=[], help=argparse.SUPPRESS)
     source_parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
 
@@ -155,26 +160,62 @@ def _run_backup(config: AppConfig, projects: list[str], *, dry_run: bool) -> Non
         docker.close()
 
 
-def _read_source_password() -> str:
+def _read_source_payload() -> tuple[str, str]:
     if sys.stdin.isatty():
-        raise ValueError("source-backup requires the Restic password on standard input")
-    password = sys.stdin.readline().rstrip("\r\n")
-    if not password:
+        raise ValueError("source-backup requires a controller payload on standard input")
+    try:
+        payload = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as exc:
+        raise ValueError("source-backup received invalid controller payload") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("source-backup controller payload must be an object")
+
+    if payload.get("version") != __version__:
+        raise ValueError(
+            "Controller BackupDock version mismatch: "
+            f"controller={payload.get('version')!r}, source={__version__}"
+        )
+    if payload.get("protocol") != REMOTE_PROTOCOL_VERSION:
+        raise ValueError(
+            "Controller BackupDock protocol mismatch: "
+            f"controller={payload.get('protocol')!r}, source={REMOTE_PROTOCOL_VERSION}"
+        )
+
+    password = payload.get("password")
+    config_yaml = payload.get("config_yaml")
+    if not isinstance(password, str) or not password:
         raise ValueError("source-backup received an empty Restic password")
-    return password
+    if not isinstance(config_yaml, str) or not config_yaml.strip():
+        raise ValueError("source-backup received an empty source configuration")
+    return password, config_yaml
 
 
-def _run_source_backup(config: AppConfig, repository: str, projects: list[str], *, dry_run: bool) -> None:
-    password = _read_source_password()
-    source_config = replace(
-        config,
-        restic=replace(config.restic, repository=repository, password_file=None),
-        retention=replace(config.retention, after_backup=False, prune=False),
-    )
+def _write_source_session_config(config_yaml: str) -> tuple[Path, Path]:
+    SOURCE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(SOURCE_RUNTIME_DIR, 0o700)
+    session_dir = Path(tempfile.mkdtemp(prefix="session-", dir=SOURCE_RUNTIME_DIR))
+    os.chmod(session_dir, 0o700)
+    config_path = session_dir / "config.yaml"
+    config_path.write_text(config_yaml, encoding="utf-8")
+    os.chmod(config_path, 0o600)
+    return session_dir, config_path
 
+
+def _run_source_backup(projects: list[str], *, dry_run: bool) -> None:
+    password, config_yaml = _read_source_payload()
+
+    if DEFAULT_CONFIG_PATH.exists():
+        print(
+            f"backupdock: warning: {DEFAULT_CONFIG_PATH} exists on the source host but is ignored "
+            "for this remote backup; using the temporary controller-provided configuration",
+            file=sys.stderr,
+        )
+
+    session_dir, config_path = _write_source_session_config(config_yaml)
     secret_keys = ("RESTIC_PASSWORD", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND")
     previous = {key: os.environ.get(key) for key in secret_keys}
     try:
+        source_config = load_config(config_path, use_environment=False)
         os.environ["RESTIC_PASSWORD"] = password
         os.environ.pop("RESTIC_PASSWORD_FILE", None)
         os.environ.pop("RESTIC_PASSWORD_COMMAND", None)
@@ -185,6 +226,11 @@ def _run_source_backup(config: AppConfig, repository: str, projects: list[str], 
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+        shutil.rmtree(session_dir, ignore_errors=True)
+
+
+def _source_info() -> None:
+    print(json.dumps({"version": __version__, "protocol": REMOTE_PROTOCOL_VERSION}))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -192,19 +238,21 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     try:
+        if args.command == "source-info":
+            _source_info()
+            return 0
+
+        if args.command == "source-backup":
+            _run_source_backup(args.project, dry_run=bool(args.dry_run))
+            return 0
+
         config = load_config(args.config)
 
         if args.command == "remote-backup":
             remote_config = config.remotes.get(args.remote)
             if remote_config is None:
                 raise ValueError(f"Unknown remote: {args.remote}")
-            RemoteBackupController(remote_config).run(args.project, dry_run=bool(args.dry_run))
-            return 0
-
-        if args.command == "source-backup":
-            _run_source_backup(
-                config,
-                args.repository,
+            RemoteBackupController(config, remote_config).run(
                 args.project,
                 dry_run=bool(args.dry_run),
             )
