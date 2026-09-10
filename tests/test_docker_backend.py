@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock
 
-from backupdock.docker_backend import merge_runtime_dependencies, parse_container_attrs
+from backupdock.docker_backend import DockerBackend, merge_runtime_dependencies, parse_container_attrs
 
 
 class DockerBackendTests(unittest.TestCase):
@@ -124,6 +125,18 @@ class DockerBackendTests(unittest.TestCase):
         web = next(container for container in enriched if container.compose_service == "web")
 
         self.assertEqual(web.compose_dependencies, ())
+
+    def test_stop_uses_container_configuration_without_timeout_override(self) -> None:
+        backend = object.__new__(DockerBackend)
+        backend.dry_run = False
+        backend._client = MagicMock()
+        backend._containers_by_id = {}
+        container = backend._client.containers.get.return_value
+
+        backend.stop("container-123")
+
+        backend._client.containers.get.assert_called_once_with("container-123")
+        container.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":
