@@ -57,7 +57,7 @@ def _inventory(groups, host_path_sources) -> None:
             state = "running" if container.running else "stopped"
             service = f" service={container.compose_service}" if container.compose_service else ""
             print(f"  container  {container.name} ({state}){service}")
-        if not group.sources:
+        if not group.sources and not group.excluded_sources:
             print("  source     (none)")
         for source in group.sources:
             detail = ""
@@ -66,6 +66,13 @@ def _inventory(groups, host_path_sources) -> None:
             if source.destination:
                 detail += f" -> {source.destination}"
             print(f"  {source.kind:<10} {source.path}{detail}")
+        for source in group.excluded_sources:
+            detail = ""
+            if source.volume_name:
+                detail = f" volume={source.volume_name}"
+            if source.destination:
+                detail += f" -> {source.destination}"
+            print(f"  {source.kind:<10} {source.path}{detail} [excluded]")
         print()
 
     if host_path_sources:
