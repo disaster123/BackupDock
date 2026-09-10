@@ -95,6 +95,16 @@ class RemoteBackupTests(unittest.TestCase):
         self.assertNotIn("docker-host", command[-1])
         self.assertEqual(command[-3:], ["--project", "nextcloud", "--dry-run"])
 
+    def test_command_passes_preseed_to_source(self) -> None:
+        remote = self._remote(Path("/secret"), Path("/rest-secret"))
+        command = RemoteBackupController(AppConfig(), remote).command(
+            ["nextcloud"],
+            dry_run=False,
+            preseed=True,
+        )
+
+        self.assertEqual(command[-3:], ["--project", "nextcloud", "--preseed"])
+
     def test_remote_init_uses_controller_rest_server_and_validates_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -205,6 +215,7 @@ class RemoteBackupTests(unittest.TestCase):
                 rest_server_password_file=rest_password_file,
                 host_paths=(Path("/remote/static"),),
                 exclude_volumes=("remote-cache",),
+                ignore_containers=("remote-temporary",),
                 projects={
                     "pbs": ProjectConfig(exclude_volumes=("remote-pbs-backups",)),
                 },
@@ -213,6 +224,7 @@ class RemoteBackupTests(unittest.TestCase):
                 backup=BackupConfig(
                     host_paths=(Path("/local/static"),),
                     exclude_volumes=("local-cache",),
+                    ignore_containers=("local-temporary",),
                 ),
                 projects={
                     "pbs": ProjectConfig(exclude_volumes=("local-pbs-backups",)),
@@ -230,9 +242,11 @@ class RemoteBackupTests(unittest.TestCase):
             self.assertEqual(payload["rest_server_password"], "rest-value")
             self.assertIn("/remote/static", source_yaml)
             self.assertIn("remote-cache", source_yaml)
+            self.assertIn("remote-temporary", source_yaml)
             self.assertIn("remote-pbs-backups", source_yaml)
             self.assertNotIn("/local/static", source_yaml)
             self.assertNotIn("local-cache", source_yaml)
+            self.assertNotIn("local-temporary", source_yaml)
             self.assertNotIn("local-pbs-backups", source_yaml)
             self.assertNotIn("remotes:", source_yaml)
             self.assertNotIn(str(password_file), source_yaml)
@@ -294,12 +308,14 @@ class RemoteBackupTests(unittest.TestCase):
                 ),
                 subprocess.CompletedProcess([], 0),
             ]
-            controller.run([], dry_run=True)
+            controller.run([], dry_run=True, preseed=True)
 
-        payload = json.loads(run.call_args_list[1].kwargs["input"])
+        backup_call = run.call_args_list[1]
+        payload = json.loads(backup_call.kwargs["input"])
         self.assertEqual(payload["repository_password"], "dry-run")
         self.assertEqual(payload["rest_server_password"], "dry-run")
         self.assertEqual(payload["rest_server_username"], "docker-host")
+        self.assertIn("--preseed", backup_call.args[0])
         self.assertIn("REMOTE DRY-RUN ssh command:", stdout.getvalue())
 
     def test_nonzero_backup_ssh_exit_is_reported(self) -> None:
