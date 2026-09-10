@@ -10,7 +10,7 @@ from backupdock import __version__
 from backupdock.config import AppConfig, RemoteConfig, render_source_config
 
 
-REMOTE_PROTOCOL_VERSION = 1
+REMOTE_PROTOCOL_VERSION = 2
 
 
 class RemoteBackupError(RuntimeError):
@@ -23,18 +23,18 @@ def repository_url(config: RemoteConfig) -> str:
     return f"rest:http://127.0.0.1:{config.remote_tunnel_port}{encoded_path}"
 
 
-def _read_password(path: Path) -> str:
+def _read_secret(path: Path, *, description: str) -> str:
     try:
         content = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
-        raise RemoteBackupError(f"Restic password file not found: {path}") from exc
+        raise RemoteBackupError(f"{description} file not found: {path}") from exc
     except OSError as exc:
-        raise RemoteBackupError(f"Cannot read Restic password file {path}: {exc}") from exc
+        raise RemoteBackupError(f"Cannot read {description} file {path}: {exc}") from exc
 
-    password = content.splitlines()[0] if content.splitlines() else ""
-    if not password:
-        raise RemoteBackupError(f"Restic password file is empty: {path}")
-    return password
+    secret = content.splitlines()[0] if content.splitlines() else ""
+    if not secret:
+        raise RemoteBackupError(f"{description} file is empty: {path}")
+    return secret
 
 
 class RemoteBackupController:
@@ -121,7 +121,22 @@ class RemoteBackupController:
             )
 
     def _payload(self, *, dry_run: bool) -> str:
-        password = "dry-run" if dry_run else _read_password(self.config.password_file)
+        repository_password = (
+            "dry-run"
+            if dry_run
+            else _read_secret(
+                self.config.password_file,
+                description="Restic repository password",
+            )
+        )
+        rest_server_password = (
+            "dry-run"
+            if dry_run
+            else _read_secret(
+                self.config.rest_server_password_file,
+                description="rest-server password",
+            )
+        )
         source_yaml = render_source_config(
             self.app_config,
             repository=repository_url(self.config),
@@ -130,7 +145,9 @@ class RemoteBackupController:
             {
                 "version": __version__,
                 "protocol": REMOTE_PROTOCOL_VERSION,
-                "password": password,
+                "repository_password": repository_password,
+                "rest_server_username": self.config.rest_server_username,
+                "rest_server_password": rest_server_password,
                 "config_yaml": source_yaml,
             }
         ) + "\n"
