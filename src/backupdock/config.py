@@ -62,11 +62,25 @@ class RetentionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RemoteConfig:
+    ssh_target: str
+    password_file: Path
+    repository_path: str
+    ssh_binary: str = "ssh"
+    source_command: tuple[str, ...] = ("backupdock",)
+    ssh_options: tuple[str, ...] = ()
+    local_rest_server_host: str = "127.0.0.1"
+    local_rest_server_port: int = 8000
+    remote_tunnel_port: int = 18080
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     restic: ResticConfig = ResticConfig()
     backup: BackupConfig = BackupConfig()
     retention: RetentionConfig = RetentionConfig()
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
+    remotes: dict[str, RemoteConfig] = field(default_factory=dict)
 
 
 def _mapping(value: Any, *, field_name: str) -> dict[str, Any]:
@@ -95,6 +109,20 @@ def _optional_path(value: Any) -> Path | None:
     if not isinstance(value, str):
         raise ValueError("Path values must be strings")
     return Path(value).expanduser()
+
+
+def _required_string(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _positive_port(value: Any, *, field_name: str, default: int) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+        raise ValueError(f"{field_name} must be an integer between 1 and 65535")
+    return value
 
 
 def _optional_int(value: Any) -> int | None:
@@ -135,6 +163,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     backup_data = _mapping(data.get("backup"), field_name="backup")
     retention_data = _mapping(data.get("retention"), field_name="retention")
     projects_data = _mapping(data.get("projects"), field_name="projects")
+    remotes_data = _mapping(data.get("remotes"), field_name="remotes")
 
     repository = restic_data.get("repository") or os.environ.get("RESTIC_REPOSITORY")
     if repository is not None and not isinstance(repository, str):
@@ -165,6 +194,51 @@ def load_config(path: Path | None = None) -> AppConfig:
             exclude_volumes=_strings(
                 project_data.get("exclude_volumes"),
                 field_name=f"projects.{project_name}.exclude_volumes",
+            ),
+        )
+
+    remote_configs: dict[str, RemoteConfig] = {}
+    for remote_name, remote_raw in remotes_data.items():
+        remote_data = _mapping(remote_raw, field_name=f"remotes.{remote_name}")
+        password_file = _optional_path(remote_data.get("password_file"))
+        if password_file is None:
+            raise ValueError(f"remotes.{remote_name}.password_file must be configured")
+        source_command_raw = remote_data.get("source_command", ["backupdock"])
+        source_command = _strings(source_command_raw, field_name=f"remotes.{remote_name}.source_command")
+        if not source_command:
+            raise ValueError(f"remotes.{remote_name}.source_command must not be empty")
+        remote_configs[remote_name] = RemoteConfig(
+            ssh_target=_required_string(
+                remote_data.get("ssh_target"),
+                field_name=f"remotes.{remote_name}.ssh_target",
+            ),
+            password_file=password_file,
+            repository_path=_required_string(
+                remote_data.get("repository_path"),
+                field_name=f"remotes.{remote_name}.repository_path",
+            ),
+            ssh_binary=_required_string(
+                remote_data.get("ssh_binary", "ssh"),
+                field_name=f"remotes.{remote_name}.ssh_binary",
+            ),
+            source_command=source_command,
+            ssh_options=_strings(
+                remote_data.get("ssh_options"),
+                field_name=f"remotes.{remote_name}.ssh_options",
+            ),
+            local_rest_server_host=_required_string(
+                remote_data.get("local_rest_server_host", "127.0.0.1"),
+                field_name=f"remotes.{remote_name}.local_rest_server_host",
+            ),
+            local_rest_server_port=_positive_port(
+                remote_data.get("local_rest_server_port"),
+                field_name=f"remotes.{remote_name}.local_rest_server_port",
+                default=8000,
+            ),
+            remote_tunnel_port=_positive_port(
+                remote_data.get("remote_tunnel_port"),
+                field_name=f"remotes.{remote_name}.remote_tunnel_port",
+                default=18080,
             ),
         )
 
@@ -221,4 +295,5 @@ def load_config(path: Path | None = None) -> AppConfig:
             keep_yearly=_optional_int(retention_data.get("keep_yearly")),
         ),
         projects=project_configs,
+        remotes=remote_configs,
     )
