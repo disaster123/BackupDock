@@ -141,7 +141,7 @@ def _boolean(value: Any, *, field_name: str, default: bool) -> bool:
     return value
 
 
-def load_config(path: Path | None = None) -> AppConfig:
+def load_config(path: Path | None = None, *, use_environment: bool = True) -> AppConfig:
     config_path = path or DEFAULT_CONFIG_PATH
     explicit_path = path is not None
 
@@ -165,12 +165,14 @@ def load_config(path: Path | None = None) -> AppConfig:
     projects_data = _mapping(data.get("projects"), field_name="projects")
     remotes_data = _mapping(data.get("remotes"), field_name="remotes")
 
-    repository = restic_data.get("repository") or os.environ.get("RESTIC_REPOSITORY")
+    repository = restic_data.get("repository")
+    if repository is None and use_environment:
+        repository = os.environ.get("RESTIC_REPOSITORY")
     if repository is not None and not isinstance(repository, str):
         raise ValueError("restic.repository must be a string")
 
     password_file_raw = restic_data.get("password_file")
-    if password_file_raw is None and os.environ.get("RESTIC_PASSWORD_FILE"):
+    if password_file_raw is None and use_environment and os.environ.get("RESTIC_PASSWORD_FILE"):
         password_file_raw = os.environ["RESTIC_PASSWORD_FILE"]
 
     backup_args = _strings(restic_data.get("backup_args"), field_name="restic.backup_args")
@@ -297,3 +299,36 @@ def load_config(path: Path | None = None) -> AppConfig:
         projects=project_configs,
         remotes=remote_configs,
     )
+
+
+def render_source_config(config: AppConfig, *, repository: str) -> str:
+    data: dict[str, Any] = {
+        "restic": {
+            "binary": config.restic.binary,
+            "repository": repository,
+            "backup_args": list(config.restic.backup_args),
+        },
+        "backup": {
+            "state_dir": str(config.backup.state_dir),
+            "stop_timeout_seconds": config.backup.stop_timeout_seconds,
+            "include_compose_metadata": config.backup.include_compose_metadata,
+            "host_paths": [str(path) for path in config.backup.host_paths],
+            "exclude_paths": [str(path) for path in config.backup.exclude_paths],
+            "exclude_volumes": list(config.backup.exclude_volumes),
+        },
+        "projects": {
+            name: {
+                "extra_paths": [str(path) for path in project.extra_paths],
+                "exclude_paths": [str(path) for path in project.exclude_paths],
+                "exclude_volumes": list(project.exclude_volumes),
+            }
+            for name, project in config.projects.items()
+        },
+        "retention": {
+            "after_backup": False,
+            "prune": False,
+        },
+    }
+    if config.restic.host is not None:
+        data["restic"]["host"] = config.restic.host
+    return yaml.safe_dump(data, sort_keys=False)
