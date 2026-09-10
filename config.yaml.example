@@ -36,6 +36,31 @@ projects: {}
 #     exclude_volumes:
 #       - "my-compose-project_large-backups"
 
+# Optional controller-side configuration for backup servers that initiate
+# backups through SSH. The backup server connects to the Docker host and opens
+# a temporary reverse tunnel to a loopback-only, append-only rest-server.
+# Local `backupdock backup` does not use this section.
+remotes: {}
+# remotes:
+#   docker-prod:
+#     ssh_target: "root@docker-prod.example"
+#     password_file: "/root/.config/restic/docker-prod.password"
+#     repository_path: "docker-prod"
+#     local_rest_server_host: "127.0.0.1"
+#     local_rest_server_port: 8000
+#     remote_tunnel_port: 18080
+#     source_command:
+#       - "backupdock"
+#     ssh_options: []
+#     # Example when a dedicated SSH key is used:
+#     # ssh_options:
+#     #   - "-i"
+#     #   - "/root/.ssh/backupdock"
+#     # Example when BackupDock must run through sudo on the source host:
+#     # source_command:
+#     #   - "sudo"
+#     #   - "backupdock"
+
 retention:
   after_backup: false
   prune: false
