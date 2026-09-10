@@ -11,14 +11,14 @@ from backupdock.config import load_config
 
 
 class ConfigTests(unittest.TestCase):
-    def test_volume_exclusions_are_loaded(self) -> None:
+    def test_local_volume_exclusions_are_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.yaml"
             config_path.write_text(
                 """
 backup:
   exclude_volumes:
-    - global_cache
+    - local_cache
 
 projects:
   pbs:
@@ -30,10 +30,10 @@ projects:
 
             config = load_config(config_path)
 
-            self.assertEqual(config.backup.exclude_volumes, ("global_cache",))
+            self.assertEqual(config.backup.exclude_volumes, ("local_cache",))
             self.assertEqual(config.projects["pbs"].exclude_volumes, ("pbs_backups",))
 
-    def test_remote_configuration_is_loaded(self) -> None:
+    def test_remote_configuration_and_source_settings_are_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.yaml"
             config_path.write_text(
@@ -45,6 +45,18 @@ remotes:
     repository_path: docker-prod
     rest_server_username: docker-prod
     rest_server_password_file: /root/.config/restic/docker-prod.rest-server-password
+    host_paths:
+      - /etc/remote-static
+    exclude_paths:
+      - /srv/remote-cache
+    exclude_volumes:
+      - remote_global_cache
+    projects:
+      pbs:
+        extra_paths:
+          - /srv/pbs-extra
+        exclude_volumes:
+          - pbs_backups
     source_command:
       - sudo
       - backupdock
@@ -69,10 +81,52 @@ remotes:
                 remote.rest_server_password_file,
                 Path("/root/.config/restic/docker-prod.rest-server-password"),
             )
+            self.assertEqual(remote.host_paths, (Path("/etc/remote-static"),))
+            self.assertEqual(remote.exclude_paths, (Path("/srv/remote-cache"),))
+            self.assertEqual(remote.exclude_volumes, ("remote_global_cache",))
+            self.assertEqual(remote.projects["pbs"].extra_paths, (Path("/srv/pbs-extra"),))
+            self.assertEqual(remote.projects["pbs"].exclude_volumes, ("pbs_backups",))
             self.assertEqual(remote.source_command, ("sudo", "backupdock"))
             self.assertEqual(remote.ssh_options, ("-i", "/root/.ssh/backupdock"))
             self.assertEqual(remote.local_rest_server_port, 8100)
             self.assertEqual(remote.remote_tunnel_port, 18100)
+
+    def test_local_and_remote_project_settings_are_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.yaml"
+            config_path.write_text(
+                """
+backup:
+  exclude_volumes:
+    - local-volume
+projects:
+  app:
+    exclude_volumes:
+      - local-app-volume
+remotes:
+  docker-prod:
+    ssh_target: root@docker-prod.example
+    password_file: /tmp/repository-password
+    repository_path: docker-prod
+    rest_server_username: docker-prod
+    rest_server_password_file: /tmp/rest-server-password
+    exclude_volumes:
+      - remote-volume
+    projects:
+      app:
+        exclude_volumes:
+          - remote-app-volume
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            remote = config.remotes["docker-prod"]
+
+            self.assertEqual(config.backup.exclude_volumes, ("local-volume",))
+            self.assertEqual(config.projects["app"].exclude_volumes, ("local-app-volume",))
+            self.assertEqual(remote.exclude_volumes, ("remote-volume",))
+            self.assertEqual(remote.projects["app"].exclude_volumes, ("remote-app-volume",))
 
     def test_remote_requires_password_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -118,6 +172,7 @@ remotes:
 
             self.assertEqual(config.backup.stop_timeout_seconds, 30)
             self.assertEqual(config.backup.exclude_volumes, ())
+            self.assertEqual(config.projects, {})
             self.assertEqual(config.remotes, {})
 
     def test_invalid_boolean_is_rejected(self) -> None:
