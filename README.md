@@ -208,6 +208,13 @@ sudo vim /etc/backupdock/config.yaml
 
 If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, normal local/controller commands write a warning to `stderr` and continue with built-in defaults where possible.
 
+`backup.state_dir`, `backup.stop_timeout_seconds`, `backup.include_compose_metadata`, and `restic.backup_args` are shared defaults used by both local and remote backup runs. Source-specific paths, exclusions, and project rules are scoped to the source host:
+
+- Local mode uses top-level `backup.host_paths`, `backup.exclude_paths`, `backup.exclude_volumes`, and `projects`.
+- Remote mode uses `remotes.<name>.host_paths`, `remotes.<name>.exclude_paths`, `remotes.<name>.exclude_volumes`, and `remotes.<name>.projects`.
+
+This keeps the existing local-mode configuration compact while allowing one controller to manage multiple Docker hosts without mixing their source-specific rules.
+
 Minimal local example using Restic's standard environment variables:
 
 ```yaml
@@ -215,6 +222,11 @@ backup:
   state_dir: "/var/lib/backupdock"
   stop_timeout_seconds: 30
   include_compose_metadata: true
+  host_paths: []
+  exclude_paths: []
+  exclude_volumes: []
+
+projects: {}
 ```
 
 Then provide the normal Restic environment:
@@ -236,7 +248,7 @@ restic:
 
 Docker-managed persistent data should normally require no configuration.
 
-Project-specific data that Docker cannot discover can be attached explicitly:
+For a local backup, project-specific data that Docker cannot discover can be attached explicitly:
 
 ```yaml
 projects:
@@ -245,12 +257,26 @@ projects:
       - "/some/additional/path"
 ```
 
-Static host paths can be backed up separately without stopping containers:
+Static local-host paths can be backed up separately without stopping containers:
 
 ```yaml
 backup:
   host_paths:
     - "/etc/some-static-config"
+```
+
+For a remote source, put the equivalent settings below that remote instead:
+
+```yaml
+remotes:
+  docker-prod:
+    # connection and repository settings omitted here
+    host_paths:
+      - "/etc/some-static-config"
+    projects:
+      paperless:
+        extra_paths:
+          - "/some/additional/path"
 ```
 
 Do not use `host_paths` for live container data. Attach such data to the relevant project instead.
@@ -259,7 +285,7 @@ Do not use `host_paths` for live container data. Attach such data to the relevan
 
 Docker volumes can be excluded by their Docker volume name. This avoids depending on Docker's host-side mount path.
 
-Prefer a project-specific exclusion when the volume belongs to one Compose project:
+For local mode, prefer a project-specific exclusion when the volume belongs to one Compose project:
 
 ```yaml
 projects:
@@ -268,15 +294,21 @@ projects:
       - "pve-backup-server-dockerfiles_backups"
 ```
 
-The other volumes of that project remain part of the backup. Volume names can be copied directly from `backupdock inventory`.
-
-A global exclusion is also available when needed:
+For remote mode, keep the rule with the remote host that owns the project:
 
 ```yaml
-backup:
-  exclude_volumes:
-    - "some_globally_ignored_volume"
+remotes:
+  docker-prod:
+    # connection and repository settings omitted here
+    projects:
+      pve-backup-server-dockerfiles:
+        exclude_volumes:
+          - "pve-backup-server-dockerfiles_backups"
 ```
+
+The other volumes of that project remain part of the backup. Volume names can be copied directly from `backupdock inventory` on the corresponding source host.
+
+A source-wide exclusion is also available when needed. In local mode use `backup.exclude_volumes`; in remote mode use `remotes.<name>.exclude_volumes`.
 
 ## Optional remote backups through a reverse SSH tunnel
 
@@ -327,18 +359,27 @@ install -d \
   /srv/backups/backupdock
 ```
 
-Create a controller-only directory for secrets and generate a REST authentication password for the example source `docker-prod`:
+Create a controller-only directory for secrets and generate separate REST authentication and Restic repository passwords for the example source `docker-prod`:
 
 ```bash
 install -d -o root -g root -m 0700 /etc/backupdock/secrets
+
 python3 - <<'PY' > /etc/backupdock/secrets/docker-prod.rest-server-password
 import secrets
 print(secrets.token_urlsafe(32))
 PY
-chmod 0600 /etc/backupdock/secrets/docker-prod.rest-server-password
+
+python3 - <<'PY' > /etc/backupdock/secrets/docker-prod.repository-password
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+
+chmod 0600 \
+  /etc/backupdock/secrets/docker-prod.rest-server-password \
+  /etc/backupdock/secrets/docker-prod.repository-password
 ```
 
-Add the rest-server user to Debian/Ubuntu's packaged authentication file using the same password. The clear-text password remains readable only by root on the controller; rest-server stores only its bcrypt hash:
+Add the rest-server user to Debian/Ubuntu's packaged authentication file using the same REST authentication password. The clear-text password remains readable only by root on the controller; rest-server stores only its bcrypt hash:
 
 ```bash
 htpasswd -B -i \
@@ -383,7 +424,7 @@ The listener should be bound to `127.0.0.1:8000`, not `0.0.0.0:8000` or another 
 
 ### Central configuration
 
-In remote mode, `/etc/backupdock/config.yaml` on the backup server is the single authoritative configuration. Backup settings and project-specific exclusions are generated from that controller configuration and sent to the source only for the current backup session.
+In remote mode, `/etc/backupdock/config.yaml` on the backup server is the single authoritative configuration. General BackupDock behavior remains under the top-level `backup` section, while source-specific paths, exclusions, and projects are stored below the corresponding `remotes.<name>` entry. This allows multiple heterogeneous Docker hosts to be managed from one controller configuration.
 
 The source-side session file is created below:
 
@@ -411,11 +452,6 @@ backup:
   stop_timeout_seconds: 30
   include_compose_metadata: true
 
-projects:
-  pve-backup-server-dockerfiles:
-    exclude_volumes:
-      - "pve-backup-server-dockerfiles_backups"
-
 remotes:
   docker-prod:
     ssh_target: "root@docker-prod.example"
@@ -426,6 +462,15 @@ remotes:
     local_rest_server_host: "127.0.0.1"
     local_rest_server_port: 8000
     remote_tunnel_port: 18080
+
+    host_paths: []
+    exclude_paths: []
+    exclude_volumes: []
+    projects:
+      pve-backup-server-dockerfiles:
+        exclude_volumes:
+          - "pve-backup-server-dockerfiles_backups"
+
     source_command:
       - "backupdock"
     ssh_options:
@@ -433,7 +478,17 @@ remotes:
       - "/root/.ssh/backupdock"
 ```
 
+Top-level `projects` and the source-specific fields inside top-level `backup` are used only by local mode. They are never copied into a remote source session. Only the selected remote's `host_paths`, exclusions, and `projects` are rendered into that source's temporary configuration.
+
 `local_rest_server_host` and `local_rest_server_port` are resolved on the backup server. `remote_tunnel_port` is opened by SSH on `127.0.0.1` of the Docker source for the lifetime of that SSH session only. `repository_path` becomes the path below the rest-server data root.
+
+After creating the controller configuration and password files, initialize that remote's Restic repository directly through BackupDock:
+
+```bash
+backupdock init --remote docker-prod
+```
+
+The command validates the selected remote configuration and both password files before invoking `restic init` against the controller-local rest-server. It does not require SSH to the source host.
 
 ### Strict version check
 
@@ -511,10 +566,16 @@ Start a configured remote backup from a backup server:
 backupdock remote-backup docker-prod
 ```
 
-Initialize the configured Restic repository:
+Initialize the configured local Restic repository:
 
 ```bash
 backupdock init
+```
+
+Initialize the repository belonging to one configured remote on the controller:
+
+```bash
+backupdock init --remote docker-prod
 ```
 
 List BackupDock snapshots:
