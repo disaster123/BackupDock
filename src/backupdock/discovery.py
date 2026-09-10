@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backupdock.config import AppConfig
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
+from backupdock.ordering import DependencyOrderError, containers_in_start_order
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,28 @@ def _metadata_sources(containers: list[ContainerInfo]) -> list[BackupSource]:
         BackupSource(path=path, kind="compose", required=False)
         for path in sorted(paths, key=lambda item: str(item))
     ]
+
+
+def _order_group_containers(group: BackupGroup) -> None:
+    known_services = {
+        container.compose_service
+        for container in group.containers
+        if container.compose_service
+    }
+    for container in group.containers:
+        for dependency in container.compose_dependencies:
+            if dependency not in known_services:
+                logger.warning(
+                    "Compose dependency target has no container in project %s: service=%s dependency=%s; ignoring it for stop/start ordering",
+                    group.name,
+                    container.compose_service or container.name,
+                    dependency,
+                )
+
+    try:
+        group.containers = containers_in_start_order(group.containers)
+    except DependencyOrderError as exc:
+        raise DiscoveryError(f"Cannot determine safe container order for project {group.name}: {exc}") from exc
 
 
 def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[BackupGroup]:
@@ -153,7 +176,7 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
             unique_excluded.setdefault(key, source)
         group.excluded_sources = list(unique_excluded.values())
 
-        group.containers.sort(key=lambda container: container.name)
+        _order_group_containers(group)
         group.sources.sort(key=lambda source: (str(normalized(source.path)), source.kind))
         group.excluded_sources.sort(key=lambda source: (str(normalized(source.path)), source.kind))
 
