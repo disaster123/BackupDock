@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from backupdock.config import ResticConfig, RetentionConfig
@@ -14,9 +14,16 @@ class ResticError(RuntimeError):
 
 
 class ResticRunner:
-    def __init__(self, config: ResticConfig, *, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        config: ResticConfig,
+        *,
+        dry_run: bool = False,
+        env_overrides: Mapping[str, str] | None = None,
+    ) -> None:
         self.config = config
         self.dry_run = dry_run
+        self.env_overrides = dict(env_overrides or {})
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -24,6 +31,7 @@ class ResticRunner:
             env["RESTIC_REPOSITORY"] = self.config.repository
         if self.config.password_file:
             env["RESTIC_PASSWORD_FILE"] = str(self.config.password_file)
+        env.update(self.env_overrides)
         return env
 
     def _base(self) -> list[str]:
