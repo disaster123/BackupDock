@@ -28,6 +28,7 @@ class BackupConfig:
     host_paths: tuple[Path, ...] = ()
     exclude_paths: tuple[Path, ...] = ()
     exclude_volumes: tuple[str, ...] = ()
+    ignore_containers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,7 @@ class RemoteConfig:
     host_paths: tuple[Path, ...] = ()
     exclude_paths: tuple[Path, ...] = ()
     exclude_volumes: tuple[str, ...] = ()
+    ignore_containers: tuple[str, ...] = ()
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
 
 
@@ -273,6 +275,10 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
                 remote_data.get("exclude_volumes"),
                 field_name=f"{remote_field}.exclude_volumes",
             ),
+            ignore_containers=_strings(
+                remote_data.get("ignore_containers"),
+                field_name=f"{remote_field}.ignore_containers",
+            ),
             projects=_project_configs(
                 remote_projects_data,
                 field_name=f"{remote_field}.projects",
@@ -312,6 +318,10 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
                 backup_data.get("exclude_volumes"),
                 field_name="backup.exclude_volumes",
             ),
+            ignore_containers=_strings(
+                backup_data.get("ignore_containers"),
+                field_name="backup.ignore_containers",
+            ),
         ),
         retention=RetentionConfig(
             after_backup=_boolean(
@@ -348,6 +358,7 @@ def render_source_config(config: AppConfig, remote: RemoteConfig, *, repository:
             "host_paths": [str(path) for path in remote.host_paths],
             "exclude_paths": [str(path) for path in remote.exclude_paths],
             "exclude_volumes": list(remote.exclude_volumes),
+            "ignore_containers": list(remote.ignore_containers),
         },
         "projects": {
             name: {
