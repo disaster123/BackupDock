@@ -170,7 +170,8 @@ remotes:
 
             config = load_config(config_path)
 
-            self.assertEqual(config.backup.stop_timeout_seconds, 30)
+            self.assertEqual(config.backup.state_dir, Path("/var/lib/backupdock"))
+            self.assertTrue(config.backup.include_compose_metadata)
             self.assertEqual(config.backup.exclude_volumes, ())
             self.assertEqual(config.projects, {})
             self.assertEqual(config.remotes, {})
@@ -197,7 +198,8 @@ remotes:
             ):
                 config = load_config()
 
-            self.assertEqual(config.backup.stop_timeout_seconds, 30)
+            self.assertEqual(config.backup.state_dir, Path("/var/lib/backupdock"))
+            self.assertTrue(config.backup.include_compose_metadata)
             self.assertIn("warning", stderr.getvalue().lower())
             self.assertIn(str(missing_config), stderr.getvalue())
 
