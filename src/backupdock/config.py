@@ -74,6 +74,10 @@ class RemoteConfig:
     local_rest_server_host: str = "127.0.0.1"
     local_rest_server_port: int = 8000
     remote_tunnel_port: int = 18080
+    host_paths: tuple[Path, ...] = ()
+    exclude_paths: tuple[Path, ...] = ()
+    exclude_volumes: tuple[str, ...] = ()
+    projects: dict[str, ProjectConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +147,28 @@ def _boolean(value: Any, *, field_name: str, default: bool) -> bool:
     return value
 
 
+def _project_configs(data: dict[str, Any], *, field_name: str) -> dict[str, ProjectConfig]:
+    project_configs: dict[str, ProjectConfig] = {}
+    for project_name, project_raw in data.items():
+        project_field = f"{field_name}.{project_name}"
+        project_data = _mapping(project_raw, field_name=project_field)
+        project_configs[project_name] = ProjectConfig(
+            extra_paths=_paths(
+                project_data.get("extra_paths"),
+                field_name=f"{project_field}.extra_paths",
+            ),
+            exclude_paths=_paths(
+                project_data.get("exclude_paths"),
+                field_name=f"{project_field}.exclude_paths",
+            ),
+            exclude_volumes=_strings(
+                project_data.get("exclude_volumes"),
+                field_name=f"{project_field}.exclude_volumes",
+            ),
+        )
+    return project_configs
+
+
 def load_config(path: Path | None = None, *, use_environment: bool = True) -> AppConfig:
     config_path = path or DEFAULT_CONFIG_PATH
     explicit_path = path is not None
@@ -183,76 +209,79 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
     if not isinstance(stop_timeout, int) or isinstance(stop_timeout, bool) or stop_timeout < 1:
         raise ValueError("backup.stop_timeout_seconds must be a positive integer")
 
-    project_configs: dict[str, ProjectConfig] = {}
-    for project_name, project_raw in projects_data.items():
-        project_data = _mapping(project_raw, field_name=f"projects.{project_name}")
-        project_configs[project_name] = ProjectConfig(
-            extra_paths=_paths(
-                project_data.get("extra_paths"),
-                field_name=f"projects.{project_name}.extra_paths",
-            ),
-            exclude_paths=_paths(
-                project_data.get("exclude_paths"),
-                field_name=f"projects.{project_name}.exclude_paths",
-            ),
-            exclude_volumes=_strings(
-                project_data.get("exclude_volumes"),
-                field_name=f"projects.{project_name}.exclude_volumes",
-            ),
-        )
+    project_configs = _project_configs(projects_data, field_name="projects")
 
     remote_configs: dict[str, RemoteConfig] = {}
     for remote_name, remote_raw in remotes_data.items():
-        remote_data = _mapping(remote_raw, field_name=f"remotes.{remote_name}")
+        remote_field = f"remotes.{remote_name}"
+        remote_data = _mapping(remote_raw, field_name=remote_field)
         password_file = _optional_path(remote_data.get("password_file"))
         if password_file is None:
-            raise ValueError(f"remotes.{remote_name}.password_file must be configured")
+            raise ValueError(f"{remote_field}.password_file must be configured")
         rest_server_password_file = _optional_path(remote_data.get("rest_server_password_file"))
         if rest_server_password_file is None:
-            raise ValueError(
-                f"remotes.{remote_name}.rest_server_password_file must be configured"
-            )
+            raise ValueError(f"{remote_field}.rest_server_password_file must be configured")
         source_command_raw = remote_data.get("source_command", ["backupdock"])
-        source_command = _strings(source_command_raw, field_name=f"remotes.{remote_name}.source_command")
+        source_command = _strings(source_command_raw, field_name=f"{remote_field}.source_command")
         if not source_command:
-            raise ValueError(f"remotes.{remote_name}.source_command must not be empty")
+            raise ValueError(f"{remote_field}.source_command must not be empty")
+        remote_projects_data = _mapping(
+            remote_data.get("projects"),
+            field_name=f"{remote_field}.projects",
+        )
         remote_configs[remote_name] = RemoteConfig(
             ssh_target=_required_string(
                 remote_data.get("ssh_target"),
-                field_name=f"remotes.{remote_name}.ssh_target",
+                field_name=f"{remote_field}.ssh_target",
             ),
             password_file=password_file,
             repository_path=_required_string(
                 remote_data.get("repository_path"),
-                field_name=f"remotes.{remote_name}.repository_path",
+                field_name=f"{remote_field}.repository_path",
             ),
             rest_server_username=_required_string(
                 remote_data.get("rest_server_username"),
-                field_name=f"remotes.{remote_name}.rest_server_username",
+                field_name=f"{remote_field}.rest_server_username",
             ),
             rest_server_password_file=rest_server_password_file,
             ssh_binary=_required_string(
                 remote_data.get("ssh_binary", "ssh"),
-                field_name=f"remotes.{remote_name}.ssh_binary",
+                field_name=f"{remote_field}.ssh_binary",
             ),
             source_command=source_command,
             ssh_options=_strings(
                 remote_data.get("ssh_options"),
-                field_name=f"remotes.{remote_name}.ssh_options",
+                field_name=f"{remote_field}.ssh_options",
             ),
             local_rest_server_host=_required_string(
                 remote_data.get("local_rest_server_host", "127.0.0.1"),
-                field_name=f"remotes.{remote_name}.local_rest_server_host",
+                field_name=f"{remote_field}.local_rest_server_host",
             ),
             local_rest_server_port=_positive_port(
                 remote_data.get("local_rest_server_port"),
-                field_name=f"remotes.{remote_name}.local_rest_server_port",
+                field_name=f"{remote_field}.local_rest_server_port",
                 default=8000,
             ),
             remote_tunnel_port=_positive_port(
                 remote_data.get("remote_tunnel_port"),
-                field_name=f"remotes.{remote_name}.remote_tunnel_port",
+                field_name=f"{remote_field}.remote_tunnel_port",
                 default=18080,
+            ),
+            host_paths=_paths(
+                remote_data.get("host_paths"),
+                field_name=f"{remote_field}.host_paths",
+            ),
+            exclude_paths=_paths(
+                remote_data.get("exclude_paths"),
+                field_name=f"{remote_field}.exclude_paths",
+            ),
+            exclude_volumes=_strings(
+                remote_data.get("exclude_volumes"),
+                field_name=f"{remote_field}.exclude_volumes",
+            ),
+            projects=_project_configs(
+                remote_projects_data,
+                field_name=f"{remote_field}.projects",
             ),
         )
 
@@ -313,7 +342,7 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
     )
 
 
-def render_source_config(config: AppConfig, *, repository: str) -> str:
+def render_source_config(config: AppConfig, remote: RemoteConfig, *, repository: str) -> str:
     data: dict[str, Any] = {
         "restic": {
             "binary": config.restic.binary,
@@ -324,9 +353,9 @@ def render_source_config(config: AppConfig, *, repository: str) -> str:
             "state_dir": str(config.backup.state_dir),
             "stop_timeout_seconds": config.backup.stop_timeout_seconds,
             "include_compose_metadata": config.backup.include_compose_metadata,
-            "host_paths": [str(path) for path in config.backup.host_paths],
-            "exclude_paths": [str(path) for path in config.backup.exclude_paths],
-            "exclude_volumes": list(config.backup.exclude_volumes),
+            "host_paths": [str(path) for path in remote.host_paths],
+            "exclude_paths": [str(path) for path in remote.exclude_paths],
+            "exclude_volumes": list(remote.exclude_volumes),
         },
         "projects": {
             name: {
@@ -334,7 +363,7 @@ def render_source_config(config: AppConfig, *, repository: str) -> str:
                 "exclude_paths": [str(path) for path in project.exclude_paths],
                 "exclude_volumes": list(project.exclude_volumes),
             }
-            for name, project in config.projects.items()
+            for name, project in remote.projects.items()
         },
         "retention": {
             "after_backup": False,
