@@ -107,6 +107,26 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue(all(not group.sources for group in groups))
         self.assertTrue(all([source.volume_name for source in group.excluded_sources] == ["shared_cache"] for group in groups))
 
+    def test_ignored_container_mounts_are_not_backup_sources(self) -> None:
+        ignored_mount = MountInfo("bind", "/data/temporary", "/data")
+        regular_mount = MountInfo("bind", "/data/regular", "/data")
+        config = AppConfig(backup=BackupConfig(ignore_containers=("temporary",)))
+
+        groups = discover_groups(
+            [
+                container("temporary", project="app", mounts=(ignored_mount,)),
+                container("regular", project="app", mounts=(regular_mount,)),
+            ],
+            config,
+        )
+        group = groups[0]
+
+        temporary = next(item for item in group.containers if item.name == "temporary")
+        self.assertTrue(temporary.ignored)
+        self.assertNotIn(Path("/data/temporary"), {source.path for source in group.sources})
+        self.assertEqual([source.path for source in group.ignored_sources], [Path("/data/temporary")])
+        self.assertEqual(group.ignored_sources[0].container, "temporary")
+
     def test_overlapping_storage_across_compose_projects_fails_safe(self) -> None:
         first = container(
             "first",
