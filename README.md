@@ -8,6 +8,51 @@ BackupDock is intentionally not a daemon, scheduler, web UI, or replacement for 
 
 > **Status:** early alpha. The backup/discovery core is usable for testing, but restore orchestration is not implemented yet. Test restores before relying on BackupDock for production data.
 
+## Operating modes
+
+BackupDock supports two operating modes. Both use the same Docker discovery, dependency ordering, Stop/Restic/Restart transaction, manifests, exclusions, and dry-run logic.
+
+### 1. Local mode
+
+BackupDock and Restic run directly on the Docker host. The permanent configuration is stored on that host.
+
+```text
+Docker host
+├── /etc/backupdock/config.yaml
+├── BackupDock
+├── Docker
+└── Restic ────────────────> repository
+```
+
+Use this mode when the Docker host can directly reach the Restic repository:
+
+```bash
+backupdock backup
+```
+
+### 2. Remote/controller mode
+
+BackupDock is installed on both the backup server and the Docker source host. The backup server owns the single permanent configuration and initiates the backup over SSH. It creates a temporary reverse SSH tunnel so Restic on the Docker host can reach an append-only rest-server on the otherwise unreachable backup server.
+
+```text
+Backup server                         Docker source
+-------------                         -------------
+/etc/backupdock/config.yaml           no permanent config required
+BackupDock controller ---- SSH -----> BackupDock
+rest-server <------ reverse tunnel -- Restic
+                                      Docker
+```
+
+The source receives only a temporary controller-generated configuration below `/run/backupdock/` for the current session. A permanent `/etc/backupdock/config.yaml` on a remote-only source is neither required nor used.
+
+Use this mode when the backup server should initiate backups or is not directly reachable from the Docker host:
+
+```bash
+backupdock remote-backup REMOTE_NAME
+```
+
+The controller verifies that both BackupDock installations have exactly the same version and compatible remote protocol before opening the backup tunnel or sending backup credentials/configuration.
+
 ## Design goals
 
 - No assumptions about host directory layouts.
