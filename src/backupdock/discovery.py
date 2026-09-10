@@ -90,6 +90,7 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
         exclusions = global_exclusions + project_exclusions
         excluded_volumes = global_volume_exclusions | project_volume_exclusions
         sources: list[BackupSource] = []
+        excluded_sources: list[BackupSource] = []
 
         for container in group.containers:
             for mount in container.mounts:
@@ -100,6 +101,17 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                 if not mount.source:
                     continue
                 if mount.type == "volume" and mount.volume_name in excluded_volumes:
+                    excluded_sources.append(
+                        BackupSource(
+                            path=Path(mount.source),
+                            kind=mount.type,
+                            container=container.name,
+                            destination=mount.destination,
+                            volume_name=mount.volume_name,
+                            read_only=mount.read_only,
+                            required=False,
+                        )
+                    )
                     continue
 
                 source_path = Path(mount.source)
@@ -134,8 +146,16 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
             key = (source.kind, str(normalized(source.path)))
             unique.setdefault(key, source)
         group.sources = list(unique.values())
+
+        unique_excluded: dict[tuple[str, str], BackupSource] = {}
+        for source in excluded_sources:
+            key = (source.kind, str(normalized(source.path)))
+            unique_excluded.setdefault(key, source)
+        group.excluded_sources = list(unique_excluded.values())
+
         group.containers.sort(key=lambda container: container.name)
         group.sources.sort(key=lambda source: (str(normalized(source.path)), source.kind))
+        group.excluded_sources.sort(key=lambda source: (str(normalized(source.path)), source.kind))
 
     groups = sorted(grouped.values(), key=lambda group: group.key)
     validate_no_cross_group_storage(groups)
