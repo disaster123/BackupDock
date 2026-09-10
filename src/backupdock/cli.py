@@ -46,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
 
     backup_parser = subparsers.add_parser("backup", help="Back up all groups sequentially")
     backup_parser.add_argument("--project", action="append", default=[], help="Back up only this Compose project or standalone group name")
+    backup_parser.add_argument("--preseed", action="store_true", help="Warm the repository while containers are running before the final consistent backup")
     backup_parser.add_argument("--dry-run", action="store_true", help="Run the normal backup workflow but print mutating actions instead of executing them")
 
     remote_parser = subparsers.add_parser(
@@ -54,6 +55,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     remote_parser.add_argument("remote", help="Remote name from the remotes configuration")
     remote_parser.add_argument("--project", action="append", default=[], help="Back up only this Compose project or standalone group name")
+    remote_parser.add_argument("--preseed", action="store_true", help="Warm the repository while source containers are running before the final consistent backup")
     remote_parser.add_argument("--dry-run", action="store_true", help="Run the source backup in dry-run mode")
 
     source_info_parser = subparsers.add_parser("source-info", help=argparse.SUPPRESS)
@@ -62,6 +64,7 @@ def _parser() -> argparse.ArgumentParser:
     source_parser = subparsers.add_parser("source-backup", help=argparse.SUPPRESS)
     source_parser.set_defaults(_internal_source_command=True)
     source_parser.add_argument("--project", action="append", default=[], help=argparse.SUPPRESS)
+    source_parser.add_argument("--preseed", action="store_true", help=argparse.SUPPRESS)
     source_parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
 
     init_parser = subparsers.add_parser("init", help="Initialize a local or remote Restic repository")
@@ -94,19 +97,30 @@ def _inventory(groups, host_path_sources) -> None:
         print(f"[{group_type}] {group.name}")
         for container in group.containers:
             state = "running" if container.running else "stopped"
+            flags: list[str] = []
+            if container.auto_remove:
+                flags.append("auto-remove")
+            if container.ignored:
+                flags.append("ignored")
+            suffix = f", {', '.join(flags)}" if flags else ""
             service = f" service={container.compose_service}" if container.compose_service else ""
             dependencies = (
                 f" dependencies={','.join(container.compose_dependencies)}"
                 if container.compose_dependencies
                 else ""
             )
-            print(f"  container  {container.name} ({state}){service}{dependencies}")
-        if not group.sources and not group.excluded_sources:
+            print(f"  container  {container.name} ({state}{suffix}){service}{dependencies}")
+        if not group.sources and not group.excluded_sources and not group.ignored_sources:
             print("  source     (none)")
         for source in group.sources:
             print(f"  {source.kind:<10} {source.path}{_source_detail(source)}")
         for source in group.excluded_sources:
             print(f"  {source.kind:<10} {source.path}{_source_detail(source)} [excluded]")
+        for source in group.ignored_sources:
+            print(
+                f"  {source.kind:<10} {source.path}{_source_detail(source)} "
+                f"[ignored container={source.container}]"
+            )
         print()
 
     if host_path_sources:
@@ -143,7 +157,13 @@ def _install_signal_handlers() -> None:
             signal.signal(signum, _signal_handler)
 
 
-def _run_backup(config: AppConfig, projects: list[str], *, dry_run: bool) -> None:
+def _run_backup(
+    config: AppConfig,
+    projects: list[str],
+    *,
+    dry_run: bool,
+    preseed: bool = False,
+) -> None:
     restic = ResticRunner(config.restic, dry_run=dry_run)
     docker = DockerBackend(dry_run=dry_run)
     try:
@@ -159,7 +179,12 @@ def _run_backup(config: AppConfig, projects: list[str], *, dry_run: bool) -> Non
                 restic,
                 config,
                 dry_run=dry_run,
-            ).run(selected_groups, selected_host_sources)
+                preseed=preseed,
+            ).run(
+                selected_groups,
+                selected_host_sources,
+                observed_groups=groups,
+            )
     finally:
         docker.close()
 
@@ -211,7 +236,7 @@ def _write_source_session_config(config_yaml: str) -> tuple[Path, Path]:
     return session_dir, config_path
 
 
-def _run_source_backup(projects: list[str], *, dry_run: bool) -> None:
+def _run_source_backup(projects: list[str], *, dry_run: bool, preseed: bool = False) -> None:
     repository_password, rest_server_username, rest_server_password, config_yaml = (
         _read_source_payload()
     )
@@ -239,7 +264,7 @@ def _run_source_backup(projects: list[str], *, dry_run: bool) -> None:
         os.environ.pop("RESTIC_PASSWORD_COMMAND", None)
         os.environ["RESTIC_REST_USERNAME"] = rest_server_username
         os.environ["RESTIC_REST_PASSWORD"] = rest_server_password
-        _run_backup(source_config, projects, dry_run=dry_run)
+        _run_backup(source_config, projects, dry_run=dry_run, preseed=preseed)
     finally:
         for key, value in previous.items():
             if value is None:
@@ -263,7 +288,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "source-backup":
-            _run_source_backup(args.project, dry_run=bool(args.dry_run))
+            _run_source_backup(
+                args.project,
+                dry_run=bool(args.dry_run),
+                preseed=bool(args.preseed),
+            )
             return 0
 
         config = load_config(args.config)
@@ -275,11 +304,17 @@ def main(argv: list[str] | None = None) -> int:
             RemoteBackupController(config, remote_config).run(
                 args.project,
                 dry_run=bool(args.dry_run),
+                preseed=bool(args.preseed),
             )
             return 0
 
         if args.command == "backup":
-            _run_backup(config, args.project, dry_run=bool(args.dry_run))
+            _run_backup(
+                config,
+                args.project,
+                dry_run=bool(args.dry_run),
+                preseed=bool(args.preseed),
+            )
             return 0
 
         if args.command == "init" and args.remote:
