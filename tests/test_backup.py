@@ -133,6 +133,22 @@ class BackupTests(unittest.TestCase):
             paths = restic.backups[0][0]
             self.assertTrue(any("manifests" in str(path) for path in paths))
 
+    def test_symlink_source_path_is_preserved_for_restic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.write_text("data", encoding="utf-8")
+            link = root / "link"
+            link.symlink_to(target)
+            config = AppConfig(backup=BackupConfig(state_dir=root / "state"))
+            restic = FakeRestic()
+
+            BackupOrchestrator(FakeDocker(), restic, config).backup_group(self._group(link))
+
+            paths = restic.backups[0][0]
+            self.assertIn(link, paths)
+            self.assertNotIn(target, paths)
+
     def test_group_without_persistent_data_is_not_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
