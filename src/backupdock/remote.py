@@ -7,7 +7,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from backupdock import __version__
-from backupdock.config import AppConfig, RemoteConfig, render_source_config
+from backupdock.config import AppConfig, RemoteConfig, ResticConfig, render_source_config
+from backupdock.restic import ResticRunner
 
 
 REMOTE_PROTOCOL_VERSION = 2
@@ -17,10 +18,20 @@ class RemoteBackupError(RuntimeError):
     pass
 
 
-def repository_url(config: RemoteConfig) -> str:
+def _encoded_repository_path(config: RemoteConfig) -> str:
     path = "/" + config.repository_path.lstrip("/")
-    encoded_path = quote(path, safe="/-._~")
-    return f"rest:http://127.0.0.1:{config.remote_tunnel_port}{encoded_path}"
+    return quote(path, safe="/-._~")
+
+
+def repository_url(config: RemoteConfig) -> str:
+    return f"rest:http://127.0.0.1:{config.remote_tunnel_port}{_encoded_repository_path(config)}"
+
+
+def controller_repository_url(config: RemoteConfig) -> str:
+    host = config.local_rest_server_host
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"rest:http://{host}:{config.local_rest_server_port}{_encoded_repository_path(config)}"
 
 
 def _read_secret(path: Path, *, description: str) -> str:
@@ -151,6 +162,28 @@ class RemoteBackupController:
                 "config_yaml": source_yaml,
             }
         ) + "\n"
+
+    def init_repository(self) -> None:
+        _read_secret(
+            self.config.password_file,
+            description="Restic repository password",
+        )
+        rest_server_password = _read_secret(
+            self.config.rest_server_password_file,
+            description="rest-server password",
+        )
+        restic_config = ResticConfig(
+            binary=self.app_config.restic.binary,
+            repository=controller_repository_url(self.config),
+            password_file=self.config.password_file,
+        )
+        ResticRunner(
+            restic_config,
+            env_overrides={
+                "RESTIC_REST_USERNAME": self.config.rest_server_username,
+                "RESTIC_REST_PASSWORD": rest_server_password,
+            },
+        ).init()
 
     def run(self, projects: list[str], *, dry_run: bool = False) -> None:
         self._check_remote_version()
