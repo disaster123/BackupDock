@@ -67,7 +67,10 @@ def _inventory(groups, host_path_sources) -> None:
         for container in group.containers:
             state = "running" if container.running else "stopped"
             service = f" service={container.compose_service}" if container.compose_service else ""
-            print(f"  container  {container.name} ({state}){service}")
+            dependencies = ""
+            if container.compose_dependencies:
+                dependencies = " dependencies=" + ",".join(container.compose_dependencies)
+            print(f"  container  {container.name} ({state}){service}{dependencies}")
         if not group.sources and not group.excluded_sources:
             print("  source     (none)")
         for source in group.sources:
