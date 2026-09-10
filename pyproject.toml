@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "backupdock"
-version = "0.3.3"
+version = "0.3.4"
 description = "Docker-aware backups with automatic bind mount and volume discovery, safe container stop/start and incremental backups."
 readme = "README.md"
 requires-python = ">=3.11"
