@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -13,8 +14,9 @@ class ResticError(RuntimeError):
 
 
 class ResticRunner:
-    def __init__(self, config: ResticConfig) -> None:
+    def __init__(self, config: ResticConfig, *, dry_run: bool = False) -> None:
         self.config = config
+        self.dry_run = dry_run
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -29,6 +31,10 @@ class ResticRunner:
 
     def _run(self, args: Sequence[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
         command = self._base() + list(args)
+        if self.dry_run:
+            print(f"DRY-RUN {shlex.join(command)}")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
         try:
             result = subprocess.run(
                 command,
