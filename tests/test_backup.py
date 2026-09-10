@@ -237,8 +237,9 @@ class BackupTests(unittest.TestCase):
             )
             docker = FakeDocker()
             restic = FakeRestic()
+            config = AppConfig(backup=BackupConfig(state_dir=root / "state"))
 
-            BackupOrchestrator(docker, restic, AppConfig()).run([group], [])
+            BackupOrchestrator(docker, restic, config).run([group], [])
 
             self.assertEqual(docker.stopped, ["id-regular"])
             self.assertEqual(docker.started, ["id-regular"])
