@@ -38,7 +38,7 @@ def _parser() -> argparse.ArgumentParser:
 
     backup_parser = subparsers.add_parser("backup", help="Back up all groups sequentially")
     backup_parser.add_argument("--project", action="append", default=[], help="Back up only this Compose project or standalone group name")
-    backup_parser.add_argument("--dry-run", action="store_true", help="Show the backup plan without stopping containers or running Restic")
+    backup_parser.add_argument("--dry-run", action="store_true", help="Run the normal backup workflow but print mutating actions instead of executing them")
 
     subparsers.add_parser("init", help="Initialize the configured Restic repository")
     subparsers.add_parser("snapshots", help="List BackupDock Restic snapshots")
@@ -82,52 +82,6 @@ def _inventory(groups, host_path_sources) -> None:
             print(f"  host       {source.path}")
 
 
-def _print_section(name: str, values: list[str]) -> None:
-    print(f"  {name}:")
-    if values:
-        for value in values:
-            print(f"    {value}")
-    else:
-        print("    (none)")
-
-
-def _dry_run(groups, host_path_sources) -> None:
-    print("Backup plan (dry-run)")
-    print()
-
-    if not groups and not host_path_sources:
-        print("Nothing to back up.")
-        return
-
-    for group in groups:
-        group_type = "compose" if group.compose_project else "standalone"
-        print(f"[{group_type}] {group.name}")
-
-        has_persistent_data = any(source.persistent for source in group.sources)
-        running = group.running_containers if has_persistent_data else []
-        running_names = [container.name for container in running]
-
-        _print_section("stop", running_names)
-        _print_section(
-            "backup",
-            [f"{source.kind:<10} {source.path}{_source_detail(source)}" for source in group.sources],
-        )
-        if group.excluded_sources:
-            _print_section(
-                "excluded",
-                [f"{source.kind:<10} {source.path}{_source_detail(source)}" for source in group.excluded_sources],
-            )
-        _print_section("restart", list(reversed(running_names)))
-        print()
-
-    if host_path_sources:
-        print("[host]")
-        _print_section("backup", [str(source.path) for source in host_path_sources])
-        print()
-
-    print("Dry-run only: no containers were stopped and Restic was not executed.")
-
-
 def _select_groups(groups, requested: list[str]):
     if not requested:
         return groups
@@ -155,7 +109,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(args.config)
-        restic = ResticRunner(config.restic)
+        dry_run = args.command == "backup" and bool(args.dry_run)
+        restic = ResticRunner(config.restic, dry_run=dry_run)
 
         if args.command == "init":
             restic.init()
@@ -170,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
             restic.forget(config.retention, prune=True if args.prune else None)
             return 0
 
-        docker = DockerBackend()
+        docker = DockerBackend(dry_run=dry_run)
         try:
             groups, host_path_sources = _discover(config, docker)
 
@@ -180,17 +135,17 @@ def main(argv: list[str] | None = None) -> int:
 
             selected_groups = _select_groups(groups, args.project)
             selected_host_sources = host_path_sources if not args.project else []
-
-            if args.dry_run:
-                _dry_run(selected_groups, selected_host_sources)
-                return 0
-
             signal.signal(signal.SIGTERM, _signal_handler)
             signal.signal(signal.SIGINT, _signal_handler)
 
             lock_path = config.backup.state_dir / "backupdock.lock"
             with ProcessLock(lock_path):
-                BackupOrchestrator(docker, restic, config).run(selected_groups, selected_host_sources)
+                BackupOrchestrator(
+                    docker,
+                    restic,
+                    config,
+                    dry_run=dry_run,
+                ).run(selected_groups, selected_host_sources)
             return 0
         finally:
             docker.close()
