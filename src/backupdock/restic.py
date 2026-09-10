@@ -68,10 +68,11 @@ class ResticRunner:
     def init(self) -> None:
         self._run(["init"])
 
-    def backup(self, paths: Sequence[Path], group_key: str) -> None:
+    def backup(self, paths: Sequence[Path], group_key: str, *, preseed: bool = False) -> None:
         if not paths:
             return
-        args = ["backup", "--tag", "backupdock", "--tag", f"backupdock-group={group_key}"]
+        primary_tag = "backupdock-preseed" if preseed else "backupdock"
+        args = ["backup", "--tag", primary_tag, "--tag", f"backupdock-group={group_key}"]
         if self.config.host:
             args.extend(["--host", self.config.host])
         args.extend(self.config.backup_args)
