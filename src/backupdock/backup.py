@@ -198,7 +198,7 @@ class BackupOrchestrator:
             )
             raise BackupError("\n".join(lines))
 
-    def backup_group(self, group: BackupGroup) -> None:
+    def backup_group(self, group: BackupGroup, *, auto_preseed: bool | None = None) -> None:
         self._status(f"[{group.key}] preparing")
         available_sources = [source for source in group.sources if _usable_source(source)]
         manifest_path = self._write_manifest(group)
@@ -220,12 +220,26 @@ class BackupOrchestrator:
         except DependencyOrderError as exc:
             raise BackupError(f"Cannot determine safe container order for project {group.name}: {exc}") from exc
 
-        if self.preseed and running:
+        should_preseed = self.preseed or auto_preseed is True
+        if should_preseed and running:
             if self.dry_run:
-                print(f"DRY-RUN preseed backup group {group.key} while containers remain running")
+                reason = "forced" if self.preseed else "automatic-no-consistent-snapshot"
+                print(
+                    f"DRY-RUN preseed backup group {group.key} while containers remain running "
+                    f"reason={reason}"
+                )
+            elif self.preseed:
+                self._status(
+                    f"[{group.key}] starting preseed; containers remain running (forced)"
+                )
             else:
-                self._status(f"[{group.key}] starting preseed; containers remain running")
+                self._status(
+                    f"[{group.key}] no consistent snapshot found; starting automatic preseed; "
+                    "containers remain running"
+                )
             self.restic.backup(paths, group.key, preseed=True)
+        elif running and auto_preseed is False:
+            self._status(f"[{group.key}] consistent snapshot found; preseed not needed")
 
         restart_candidates: list = []
         primary_error: BaseException | None = None
@@ -272,10 +286,17 @@ class BackupOrchestrator:
         self._status("BackupDock: validating backup safety")
         self._validate_safety(groups, host_sources, observed_groups or groups)
         self._status("BackupDock: checking Restic repository")
-        self.restic.preflight()
+        consistent_groups = self.restic.preflight()
         self._status("BackupDock: Restic repository ready")
+        if self.dry_run and consistent_groups is None and not self.preseed:
+            print(
+                "DRY-RUN automatic preseed decision unavailable: repository state is not queried "
+                "in dry-run; a real backup will automatically preseed groups without a "
+                "consistent snapshot"
+            )
         for group in groups:
-            self.backup_group(group)
+            auto_preseed = None if consistent_groups is None else group.key not in consistent_groups
+            self.backup_group(group, auto_preseed=auto_preseed)
         self.backup_host_paths(host_sources)
         if self.config.retention.after_backup and self.config.retention.configured():
             self._status("BackupDock: applying retention policy")
