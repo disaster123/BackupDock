@@ -64,7 +64,7 @@ class RemoteBackupController:
     def info_command(self) -> list[str]:
         return [*self._ssh_base(), *self.config.source_command, "source-info"]
 
-    def command(self, projects: list[str], *, dry_run: bool) -> list[str]:
+    def command(self, projects: list[str], *, dry_run: bool, preseed: bool = False) -> list[str]:
         reverse_forward = (
             f"127.0.0.1:{self.config.remote_tunnel_port}:"
             f"{self.config.local_rest_server_host}:{self.config.local_rest_server_port}"
@@ -87,6 +87,8 @@ class RemoteBackupController:
         ]
         for project in projects:
             command.extend(["--project", project])
+        if preseed:
+            command.append("--preseed")
         if dry_run:
             command.append("--dry-run")
         return command
@@ -186,9 +188,15 @@ class RemoteBackupController:
             },
         ).init()
 
-    def run(self, projects: list[str], *, dry_run: bool = False) -> None:
+    def run(
+        self,
+        projects: list[str],
+        *,
+        dry_run: bool = False,
+        preseed: bool = False,
+    ) -> None:
         self._check_remote_version()
-        command = self.command(projects, dry_run=dry_run)
+        command = self.command(projects, dry_run=dry_run, preseed=preseed)
         payload = self._payload(dry_run=dry_run)
 
         if dry_run:
