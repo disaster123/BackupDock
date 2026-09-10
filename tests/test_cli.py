@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import signal
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -137,6 +138,31 @@ class CliDryRunTests(unittest.TestCase):
             dry_run=False,
             preseed=True,
         )
+
+    def test_remote_backup_keyboard_interrupt_is_clean(self) -> None:
+        remote = RemoteConfig(
+            ssh_target="root@docker-prod.example",
+            password_file=Path("/repository-password"),
+            repository_path="docker-prod",
+            rest_server_username="docker-prod",
+            rest_server_password_file=Path("/rest-server-password"),
+        )
+        config = AppConfig(remotes={"docker-prod": remote})
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch("backupdock.cli.load_config", return_value=config),
+            patch("backupdock.cli.RemoteBackupController") as controller_class,
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            controller_class.return_value.run.side_effect = KeyboardInterrupt()
+            result = main(["remote-backup", "docker-prod"])
+
+        self.assertEqual(result, 128 + signal.SIGINT)
+        self.assertIn("backupdock: interrupted by SIGINT", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_remote_init_uses_selected_remote_controller(self) -> None:
         remote = RemoteConfig(
