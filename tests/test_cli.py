@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from backupdock.cli import _dry_run, main
-from backupdock.config import AppConfig
+from backupdock.cli import main
+from backupdock.config import AppConfig, BackupConfig
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
 
 
@@ -25,7 +25,7 @@ def _container(name: str, *, running: bool) -> ContainerInfo:
     )
 
 
-def _group() -> BackupGroup:
+def _group(source: Path) -> BackupGroup:
     return BackupGroup(
         key="compose:app",
         name="app",
@@ -35,70 +35,66 @@ def _group() -> BackupGroup:
             _container("worker", running=False),
             _container("web", running=True),
         ],
-        sources=[
-            BackupSource(
-                path=Path("/docker/volumes/app_db/_data"),
-                kind="volume",
-                destination="/var/lib/db",
-                volume_name="app_db",
-            ),
-            BackupSource(path=Path("/opt/app/compose.yaml"), kind="compose", required=False),
-        ],
-        excluded_sources=[
-            BackupSource(
-                path=Path("/docker/volumes/app_backups/_data"),
-                kind="volume",
-                destination="/backups",
-                volume_name="app_backups",
-            )
-        ],
+        sources=[BackupSource(path=source, kind="bind")],
     )
 
 
 class CliDryRunTests(unittest.TestCase):
-    def test_dry_run_shows_stop_backup_excluded_and_restart_plan(self) -> None:
-        stdout = io.StringIO()
-
-        with contextlib.redirect_stdout(stdout):
-            _dry_run([_group()], [])
-
-        output = stdout.getvalue()
-        self.assertIn("Backup plan (dry-run)", output)
-        self.assertIn("[compose] app", output)
-        self.assertIn("app_db", output)
-        self.assertIn("app_backups", output)
-        self.assertIn("excluded:", output)
-        self.assertIn("Dry-run only: no containers were stopped and Restic was not executed.", output)
-
-        stop_section = output.split("  stop:\n", 1)[1].split("  backup:\n", 1)[0]
-        restart_section = output.split("  restart:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertIn("db", stop_section)
-        self.assertIn("web", stop_section)
-        self.assertNotIn("worker", stop_section)
-        self.assertIn("db", restart_section)
-        self.assertIn("web", restart_section)
-        self.assertNotIn("worker", restart_section)
-
-    def test_main_dry_run_does_not_execute_restic_or_modify_containers(self) -> None:
+    def test_main_dry_run_uses_normal_orchestrator_run(self) -> None:
         docker = MagicMock()
         restic = MagicMock()
+        orchestrator = MagicMock()
+        process_lock = MagicMock()
+        process_lock.__enter__.return_value = process_lock
+        process_lock.__exit__.return_value = None
+        config = AppConfig(backup=BackupConfig(state_dir=Path("/tmp/backupdock-test-state")))
+        group = _group(Path("/tmp/backupdock-test-source"))
 
         with (
-            patch("backupdock.cli.load_config", return_value=AppConfig()),
-            patch("backupdock.cli.DockerBackend", return_value=docker),
-            patch("backupdock.cli.ResticRunner", return_value=restic),
-            patch("backupdock.cli._discover", return_value=([_group()], [])),
+            patch("backupdock.cli.load_config", return_value=config),
+            patch("backupdock.cli.DockerBackend", return_value=docker) as docker_class,
+            patch("backupdock.cli.ResticRunner", return_value=restic) as restic_class,
+            patch("backupdock.cli._discover", return_value=([group], [])),
+            patch("backupdock.cli.ProcessLock", return_value=process_lock),
+            patch("backupdock.cli.BackupOrchestrator", return_value=orchestrator) as orchestrator_class,
+            patch("backupdock.cli.signal.signal"),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             result = main(["backup", "--dry-run"])
 
         self.assertEqual(result, 0)
-        restic.preflight.assert_not_called()
-        restic.backup.assert_not_called()
-        restic.forget.assert_not_called()
-        docker.stop.assert_not_called()
-        docker.ensure_running.assert_not_called()
+        docker_class.assert_called_once_with(dry_run=True)
+        restic_class.assert_called_once_with(config.restic, dry_run=True)
+        orchestrator_class.assert_called_once_with(docker, restic, config, dry_run=True)
+        orchestrator.run.assert_called_once_with([group], [])
         docker.close.assert_called_once()
+
+    def test_real_backup_constructs_same_components_without_dry_run(self) -> None:
+        docker = MagicMock()
+        restic = MagicMock()
+        orchestrator = MagicMock()
+        process_lock = MagicMock()
+        process_lock.__enter__.return_value = process_lock
+        process_lock.__exit__.return_value = None
+        config = AppConfig(backup=BackupConfig(state_dir=Path("/tmp/backupdock-test-state")))
+        group = _group(Path("/tmp/backupdock-test-source"))
+
+        with (
+            patch("backupdock.cli.load_config", return_value=config),
+            patch("backupdock.cli.DockerBackend", return_value=docker) as docker_class,
+            patch("backupdock.cli.ResticRunner", return_value=restic) as restic_class,
+            patch("backupdock.cli._discover", return_value=([group], [])),
+            patch("backupdock.cli.ProcessLock", return_value=process_lock),
+            patch("backupdock.cli.BackupOrchestrator", return_value=orchestrator) as orchestrator_class,
+            patch("backupdock.cli.signal.signal"),
+        ):
+            result = main(["backup"])
+
+        self.assertEqual(result, 0)
+        docker_class.assert_called_once_with(dry_run=False)
+        restic_class.assert_called_once_with(config.restic, dry_run=False)
+        orchestrator_class.assert_called_once_with(docker, restic, config, dry_run=False)
+        orchestrator.run.assert_called_once_with([group], [])
 
 
 if __name__ == "__main__":
