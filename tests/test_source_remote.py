@@ -31,11 +31,22 @@ class SourceRemoteTests(unittest.TestCase):
             patch("backupdock.cli.RemoteBackupController") as controller_class,
             patch("backupdock.cli.DockerBackend") as docker_class,
         ):
-            result = main(["remote-backup", "source", "--project", "nextcloud", "--dry-run"])
+            result = main([
+                "remote-backup",
+                "source",
+                "--project",
+                "nextcloud",
+                "--preseed",
+                "--dry-run",
+            ])
 
         self.assertEqual(result, 0)
         controller_class.assert_called_once_with(config, remote)
-        controller_class.return_value.run.assert_called_once_with(["nextcloud"], dry_run=True)
+        controller_class.return_value.run.assert_called_once_with(
+            ["nextcloud"],
+            dry_run=True,
+            preseed=True,
+        )
         docker_class.assert_not_called()
 
     def test_source_info_does_not_load_default_config(self) -> None:
@@ -65,6 +76,8 @@ restic:
 backup:
   state_dir: "/var/lib/backupdock"
   include_compose_metadata: true
+  ignore_containers:
+    - temporary-worker
 projects:
   pbs:
     exclude_volumes:
@@ -86,10 +99,11 @@ retention:
             observed: dict[str, object] = {}
             stderr = io.StringIO()
 
-            def capture(source_config, projects, *, dry_run):
+            def capture(source_config, projects, *, dry_run, preseed=False):
                 observed["config"] = source_config
                 observed["projects"] = projects
                 observed["dry_run"] = dry_run
+                observed["preseed"] = preseed
                 observed["password"] = os.environ.get("RESTIC_PASSWORD")
                 observed["password_file"] = os.environ.get("RESTIC_PASSWORD_FILE")
                 observed["password_command"] = os.environ.get("RESTIC_PASSWORD_COMMAND")
@@ -117,7 +131,7 @@ retention:
                     patch("sys.stdin", io.StringIO(payload)),
                     contextlib.redirect_stderr(stderr),
                 ):
-                    _run_source_backup(["nextcloud"], dry_run=False)
+                    _run_source_backup(["nextcloud"], dry_run=False, preseed=True)
             finally:
                 for key, value in previous.items():
                     if value is None:
@@ -127,6 +141,7 @@ retention:
 
             source_config = observed["config"]
             self.assertTrue(source_config.backup.include_compose_metadata)
+            self.assertEqual(source_config.backup.ignore_containers, ("temporary-worker",))
             self.assertEqual(source_config.restic.repository, "rest:http://127.0.0.1:18080/source")
             self.assertEqual(source_config.projects["pbs"].exclude_volumes, ("pbs-backups",))
             self.assertFalse(source_config.retention.after_backup)
@@ -138,6 +153,7 @@ retention:
             self.assertEqual(observed["rest_password"], "rest-session-value")
             self.assertEqual(observed["projects"], ["nextcloud"])
             self.assertFalse(observed["dry_run"])
+            self.assertTrue(observed["preseed"])
             self.assertIn("ignored", stderr.getvalue())
             self.assertIn(str(local_config), stderr.getvalue())
             self.assertEqual(list(runtime_dir.glob("session-*")), [])
