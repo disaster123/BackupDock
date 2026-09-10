@@ -21,6 +21,7 @@ BackupDock is intentionally not a daemon, scheduler, web UI, or replacement for 
 - Standalone containers are supported as one-container backup groups.
 - Shared/overlapping persistent storage across different groups fails safely instead of silently producing an inconsistent backup.
 - Restic remains the backup engine and repository format.
+- Local backups remain the default; backup-server-initiated remote backups are optional.
 - Scheduling is left to systemd, cron, or another external scheduler.
 
 ## How grouping works
@@ -69,9 +70,10 @@ There are **no built-in paths such as `/srv/files`, `/srv/docker-config`, `/opt/
 
 - Linux
 - Python 3.11+
-- Docker Engine
+- Docker Engine on source hosts
 - Restic
 - permission to access the Docker daemon and the host-side persistent data (normally run as root)
+- OpenSSH client on a backup server when using `remote-backup`
 
 Docker itself is never installed or modified by BackupDock.
 
@@ -229,6 +231,76 @@ backup:
     - "some_globally_ignored_volume"
 ```
 
+## Optional remote backups through a reverse SSH tunnel
+
+Local backups remain the default and continue to use `backupdock backup` exactly as before.
+
+For a backup server that is behind a firewall, BackupDock can instead run as the controller. The backup server initiates SSH to the Docker host and asks OpenSSH to create a loopback-only reverse forward on the source host. Restic still runs on the Docker host, but its REST repository URL points to that temporary loopback port and traffic is carried back through the SSH connection to a rest-server on the backup server.
+
+Recommended layout:
+
+```text
+backup server                         Docker source
+-------------                         -------------
+rest-server --append-only
+127.0.0.1:8000
+       ^
+       | reverse SSH tunnel
+       +------------------------------ 127.0.0.1:18080
+                                        |
+                                        +-- restic
+                                        +-- BackupDock
+                                        +-- Docker
+```
+
+The rest-server should be bound only to loopback and run with `--append-only`. This means the source host can create new backup data during the tunnel session but cannot use the REST endpoint to delete or modify existing repository data. Repository maintenance such as `forget` and `prune` should be run locally on the backup server with normal repository access.
+
+Example controller-side configuration on the backup server:
+
+```yaml
+remotes:
+  docker-prod:
+    ssh_target: "root@docker-prod.example"
+    password_file: "/root/.config/restic/docker-prod.password"
+    repository_path: "docker-prod"
+    local_rest_server_host: "127.0.0.1"
+    local_rest_server_port: 8000
+    remote_tunnel_port: 18080
+    source_command:
+      - "backupdock"
+    ssh_options:
+      - "-i"
+      - "/root/.ssh/backupdock"
+```
+
+`local_rest_server_host` and `local_rest_server_port` are resolved on the backup server. `remote_tunnel_port` is opened by SSH on `127.0.0.1` of the Docker source for the lifetime of that SSH session only. `repository_path` becomes the path below the rest-server data root.
+
+Start the remote backup from the backup server:
+
+```bash
+backupdock remote-backup docker-prod
+```
+
+Or only one Compose project:
+
+```bash
+backupdock remote-backup docker-prod --project nextcloud
+```
+
+Dry-run is also available:
+
+```bash
+backupdock remote-backup docker-prod --dry-run
+```
+
+The controller does not put the Restic repository password into the SSH command line. It reads the configured password file on the backup server and sends the password to the source-side BackupDock process through SSH standard input. The source process uses it only for that process invocation. Any configured source-side `RESTIC_PASSWORD_FILE` or `RESTIC_PASSWORD_COMMAND` is ignored for this remote session.
+
+The source-side command is `backupdock source-backup`; it is normally invoked only by `remote-backup`. It overrides the Restic repository for that session with the tunnel URL, but then enters the same `_run_backup` path as a normal local backup. Discovery, dependency ordering, source validation, locking, Stop/Restic/Restart handling, manifests, and dry-run therefore remain shared rather than duplicated.
+
+Automatic retention is intentionally disabled for `source-backup`, even if `retention.after_backup` is enabled in the source configuration. Destructive retention operations must not be sent through the append-only endpoint.
+
+If the SSH session is interrupted, BackupDock handles `SIGHUP` in addition to `SIGINT` and `SIGTERM`, so an interrupted source-side run reaches the same guarded restart path for containers already stopped by BackupDock.
+
 ## CLI
 
 Inspect the discovered groups, sources, dependencies, and excluded Docker volumes:
@@ -263,6 +335,12 @@ Back up only one Compose project:
 
 ```bash
 backupdock backup --project paperless
+```
+
+Start a configured remote backup from a backup server:
+
+```bash
+backupdock remote-backup docker-prod
 ```
 
 Initialize the configured Restic repository:
@@ -326,9 +404,13 @@ retention:
 
 Keeping `after_backup: false` avoids making every normal backup run perform repository maintenance. `backupdock forget` can be scheduled independently.
 
+For append-only remote backups, run retention locally on the backup server against the repository path rather than through `remote-backup`.
+
 ## Scheduling
 
 BackupDock contains no scheduler. Example systemd unit and timer files are available in [`examples/`](examples/).
+
+For remote mode, schedule `backupdock remote-backup REMOTE_NAME` on the backup server. The reverse SSH tunnel then exists only for the duration of each scheduled backup.
 
 ## Restore status
 
