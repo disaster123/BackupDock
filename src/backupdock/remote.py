@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
-from backupdock.config import RemoteConfig
+from backupdock import __version__
+from backupdock.config import AppConfig, RemoteConfig, render_source_config
+
+
+REMOTE_PROTOCOL_VERSION = 1
 
 
 class RemoteBackupError(RuntimeError):
@@ -33,8 +38,20 @@ def _read_password(path: Path) -> str:
 
 
 class RemoteBackupController:
-    def __init__(self, config: RemoteConfig) -> None:
-        self.config = config
+    def __init__(self, app_config: AppConfig, remote_config: RemoteConfig) -> None:
+        self.app_config = app_config
+        self.config = remote_config
+
+    def _ssh_base(self) -> list[str]:
+        return [
+            self.config.ssh_binary,
+            "-T",
+            *self.config.ssh_options,
+            self.config.ssh_target,
+        ]
+
+    def info_command(self) -> list[str]:
+        return [*self._ssh_base(), *self.config.source_command, "source-info"]
 
     def command(self, projects: list[str], *, dry_run: bool) -> list[str]:
         reverse_forward = (
@@ -56,8 +73,6 @@ class RemoteBackupController:
             self.config.ssh_target,
             *self.config.source_command,
             "source-backup",
-            "--repository",
-            repository_url(self.config),
         ]
         for project in projects:
             command.extend(["--project", project])
@@ -65,9 +80,65 @@ class RemoteBackupController:
             command.append("--dry-run")
         return command
 
-    def run(self, projects: list[str], *, dry_run: bool = False) -> None:
-        command = self.command(projects, dry_run=dry_run)
+    def _check_remote_version(self) -> None:
+        command = self.info_command()
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RemoteBackupError(f"SSH binary not found: {self.config.ssh_binary}") from exc
+        except OSError as exc:
+            raise RemoteBackupError(f"Cannot start SSH command: {exc}") from exc
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            suffix = f": {detail}" if detail else ""
+            raise RemoteBackupError(
+                f"Cannot query remote BackupDock version; SSH exit code {result.returncode}{suffix}"
+            )
+
+        try:
+            info = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RemoteBackupError("Remote source-info returned invalid JSON") from exc
+
+        remote_version = info.get("version")
+        remote_protocol = info.get("protocol")
+        if remote_version != __version__:
+            raise RemoteBackupError(
+                "Remote BackupDock version mismatch: "
+                f"controller={__version__}, source={remote_version or 'unknown'}. "
+                "Update BackupDock on both hosts before running a remote backup."
+            )
+        if remote_protocol != REMOTE_PROTOCOL_VERSION:
+            raise RemoteBackupError(
+                "Remote BackupDock protocol mismatch: "
+                f"controller={REMOTE_PROTOCOL_VERSION}, source={remote_protocol!r}"
+            )
+
+    def _payload(self, *, dry_run: bool) -> str:
         password = "dry-run" if dry_run else _read_password(self.config.password_file)
+        source_yaml = render_source_config(
+            self.app_config,
+            repository=repository_url(self.config),
+        )
+        return json.dumps(
+            {
+                "version": __version__,
+                "protocol": REMOTE_PROTOCOL_VERSION,
+                "password": password,
+                "config_yaml": source_yaml,
+            }
+        ) + "\n"
+
+    def run(self, projects: list[str], *, dry_run: bool = False) -> None:
+        self._check_remote_version()
+        command = self.command(projects, dry_run=dry_run)
+        payload = self._payload(dry_run=dry_run)
 
         if dry_run:
             print(f"REMOTE DRY-RUN ssh command: {shlex.join(command)}")
@@ -75,7 +146,7 @@ class RemoteBackupController:
         try:
             result = subprocess.run(
                 command,
-                input=password + "\n",
+                input=payload,
                 text=True,
                 check=False,
             )
