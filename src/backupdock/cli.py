@@ -87,8 +87,8 @@ def _inventory(groups, host_path_sources) -> None:
             state = "running" if container.running else "stopped"
             service = f" service={container.compose_service}" if container.compose_service else ""
             dependencies = (
-                f" dependencies={','.join(container.dependencies)}"
-                if container.dependencies
+                f" dependencies={','.join(container.compose_dependencies)}"
+                if container.compose_dependencies
                 else ""
             )
             print(f"  container  {container.name} ({state}){service}{dependencies}")
