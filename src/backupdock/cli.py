@@ -12,6 +12,7 @@ from backupdock.config import AppConfig, load_config
 from backupdock.discovery import DiscoveryError, discover_groups, host_sources
 from backupdock.docker_backend import DockerBackend
 from backupdock.locking import LockError, ProcessLock
+from backupdock.models import BackupSource
 from backupdock.restic import ResticError, ResticRunner
 
 
@@ -37,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
 
     backup_parser = subparsers.add_parser("backup", help="Back up all groups sequentially")
     backup_parser.add_argument("--project", action="append", default=[], help="Back up only this Compose project or standalone group name")
+    backup_parser.add_argument("--dry-run", action="store_true", help="Show the backup plan without stopping containers or running Restic")
 
     subparsers.add_parser("init", help="Initialize the configured Restic repository")
     subparsers.add_parser("snapshots", help="List BackupDock Restic snapshots")
@@ -45,6 +47,15 @@ def _parser() -> argparse.ArgumentParser:
     forget_parser = subparsers.add_parser("forget", help="Apply the configured retention policy")
     forget_parser.add_argument("--prune", action="store_true", help="Prune unreferenced data after forgetting snapshots")
     return parser
+
+
+def _source_detail(source: BackupSource) -> str:
+    detail = ""
+    if source.volume_name:
+        detail = f" volume={source.volume_name}"
+    if source.destination:
+        detail += f" -> {source.destination}"
+    return detail
 
 
 def _inventory(groups, host_path_sources) -> None:
@@ -60,25 +71,61 @@ def _inventory(groups, host_path_sources) -> None:
         if not group.sources and not group.excluded_sources:
             print("  source     (none)")
         for source in group.sources:
-            detail = ""
-            if source.volume_name:
-                detail = f" volume={source.volume_name}"
-            if source.destination:
-                detail += f" -> {source.destination}"
-            print(f"  {source.kind:<10} {source.path}{detail}")
+            print(f"  {source.kind:<10} {source.path}{_source_detail(source)}")
         for source in group.excluded_sources:
-            detail = ""
-            if source.volume_name:
-                detail = f" volume={source.volume_name}"
-            if source.destination:
-                detail += f" -> {source.destination}"
-            print(f"  {source.kind:<10} {source.path}{detail} [excluded]")
+            print(f"  {source.kind:<10} {source.path}{_source_detail(source)} [excluded]")
         print()
 
     if host_path_sources:
         print("[host]")
         for source in host_path_sources:
             print(f"  host       {source.path}")
+
+
+def _print_section(name: str, values: list[str]) -> None:
+    print(f"  {name}:")
+    if values:
+        for value in values:
+            print(f"    {value}")
+    else:
+        print("    (none)")
+
+
+def _dry_run(groups, host_path_sources) -> None:
+    print("Backup plan (dry-run)")
+    print()
+
+    if not groups and not host_path_sources:
+        print("Nothing to back up.")
+        return
+
+    for group in groups:
+        group_type = "compose" if group.compose_project else "standalone"
+        print(f"[{group_type}] {group.name}")
+
+        has_persistent_data = any(source.persistent for source in group.sources)
+        running = group.running_containers if has_persistent_data else []
+        running_names = [container.name for container in running]
+
+        _print_section("stop", running_names)
+        _print_section(
+            "backup",
+            [f"{source.kind:<10} {source.path}{_source_detail(source)}" for source in group.sources],
+        )
+        if group.excluded_sources:
+            _print_section(
+                "excluded",
+                [f"{source.kind:<10} {source.path}{_source_detail(source)}" for source in group.excluded_sources],
+            )
+        _print_section("restart", list(reversed(running_names)))
+        print()
+
+    if host_path_sources:
+        print("[host]")
+        _print_section("backup", [str(source.path) for source in host_path_sources])
+        print()
+
+    print("Dry-run only: no containers were stopped and Restic was not executed.")
 
 
 def _select_groups(groups, requested: list[str]):
@@ -133,6 +180,11 @@ def main(argv: list[str] | None = None) -> int:
 
             selected_groups = _select_groups(groups, args.project)
             selected_host_sources = host_path_sources if not args.project else []
+
+            if args.dry_run:
+                _dry_run(selected_groups, selected_host_sources)
+                return 0
+
             signal.signal(signal.SIGTERM, _signal_handler)
             signal.signal(signal.SIGINT, _signal_handler)
 
