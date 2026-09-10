@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -13,6 +15,28 @@ class ResticError(RuntimeError):
     pass
 
 
+def _format_bytes(value: int) -> str:
+    size = float(max(0, value))
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    unit = units[0]
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            break
+        size /= 1024.0
+    if unit == "B":
+        return f"{int(size)} B"
+    return f"{size:.1f} {unit}"
+
+
+def _format_duration(seconds: int | float) -> str:
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
 class ResticRunner:
     def __init__(
         self,
@@ -20,10 +44,16 @@ class ResticRunner:
         *,
         dry_run: bool = False,
         env_overrides: Mapping[str, str] | None = None,
+        progress: bool | None = None,
     ) -> None:
         self.config = config
         self.dry_run = dry_run
         self.env_overrides = dict(env_overrides or {})
+        self.progress = (
+            bool(getattr(sys.stdout, "isatty", lambda: False)())
+            if progress is None
+            else progress
+        )
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -62,6 +92,145 @@ class ResticRunner:
             raise ResticError(f"Restic command failed with exit code {result.returncode}{suffix}")
         return result
 
+    @staticmethod
+    def _clear_progress(width: int) -> None:
+        if width <= 0:
+            return
+        sys.stdout.write("\r" + (" " * width) + "\r")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _progress_text(message: dict, group_key: str, *, preseed: bool) -> str:
+        phase = "preseed" if preseed else "backup"
+        bytes_done = int(message.get("bytes_done") or 0)
+        total_bytes = int(message.get("total_bytes") or 0)
+        files_done = int(message.get("files_done") or 0)
+        total_files = int(message.get("total_files") or 0)
+        percent = float(message.get("percent_done") or 0.0)
+
+        parts = [f"[{group_key}] {phase}"]
+        if total_bytes > 0:
+            parts.append(f"{percent * 100:5.1f}%")
+            parts.append(f"{_format_bytes(bytes_done)} / {_format_bytes(total_bytes)}")
+        else:
+            parts.append(f"{_format_bytes(bytes_done)} processed")
+
+        if total_files > 0:
+            parts.append(f"{files_done:,} / {total_files:,} files")
+        elif files_done > 0:
+            parts.append(f"{files_done:,} files")
+
+        remaining = int(message.get("seconds_remaining") or 0)
+        if remaining > 0:
+            parts.append(f"ETA {_format_duration(remaining)}")
+        return "  ".join(parts)
+
+    @staticmethod
+    def _summary_text(message: dict, group_key: str, *, preseed: bool) -> str:
+        phase = "preseed" if preseed else "backup"
+        files = int(message.get("total_files_processed") or 0)
+        processed = int(message.get("total_bytes_processed") or 0)
+        stored_raw = message.get("data_added_packed")
+        if stored_raw is None:
+            stored_raw = message.get("data_added")
+        stored = int(stored_raw or 0)
+        duration = float(message.get("total_duration") or 0.0)
+        snapshot_id = str(message.get("snapshot_id") or "")
+
+        text = (
+            f"[{group_key}] {phase} complete: {files:,} files, "
+            f"{_format_bytes(processed)} processed, {_format_bytes(stored)} stored"
+        )
+        if duration > 0:
+            text += f", {_format_duration(duration)}"
+        if snapshot_id:
+            text += f", snapshot {snapshot_id[:8]} saved"
+        else:
+            text += ", no new snapshot"
+        return text
+
+    def _run_backup_with_progress(
+        self,
+        args: Sequence[str],
+        group_key: str,
+        *,
+        preseed: bool,
+    ) -> None:
+        command = self._base() + list(args)
+        process: subprocess.Popen[str] | None = None
+        progress_width = 0
+        summary: dict | None = None
+
+        try:
+            process = subprocess.Popen(
+                command,
+                env=self._env(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+            )
+            if process.stdout is None:
+                raise ResticError("Cannot read Restic progress output")
+
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    self._clear_progress(progress_width)
+                    progress_width = 0
+                    print(line, flush=True)
+                    continue
+
+                message_type = message.get("message_type")
+                if message_type == "status":
+                    text = self._progress_text(message, group_key, preseed=preseed)
+                    sys.stdout.write("\r" + text.ljust(progress_width))
+                    sys.stdout.flush()
+                    progress_width = max(progress_width, len(text))
+                elif message_type == "summary":
+                    summary = message
+                elif message_type == "error":
+                    self._clear_progress(progress_width)
+                    progress_width = 0
+                    error_value = message.get("error")
+                    detail = ""
+                    if isinstance(error_value, dict):
+                        detail = str(error_value.get("message") or "")
+                    if not detail:
+                        detail = str(message.get("message") or "Restic reported an error")
+                    item = str(message.get("item") or "")
+                    suffix = f" ({item})" if item else ""
+                    print(f"[{group_key}] restic error: {detail}{suffix}", file=sys.stderr, flush=True)
+
+            returncode = process.wait()
+        except FileNotFoundError as exc:
+            raise ResticError(f"Restic binary not found: {self.config.binary}") from exc
+        except BaseException:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            raise
+        finally:
+            self._clear_progress(progress_width)
+            if process is not None and process.stdout is not None:
+                process.stdout.close()
+
+        if returncode != 0:
+            raise ResticError(f"Restic command failed with exit code {returncode}")
+        if summary is not None:
+            print(self._summary_text(summary, group_key, preseed=preseed), flush=True)
+        else:
+            phase = "preseed" if preseed else "backup"
+            print(f"[{group_key}] {phase} complete", flush=True)
+
     def preflight(self) -> None:
         self._run(["snapshots", "--json"], capture=True)
 
@@ -77,6 +246,12 @@ class ResticRunner:
             args.extend(["--host", self.config.host])
         args.extend(self.config.backup_args)
         args.extend(str(path) for path in paths)
+
+        if self.progress and not self.dry_run:
+            if "--json" not in args:
+                args.insert(1, "--json")
+            self._run_backup_with_progress(args, group_key, preseed=preseed)
+            return
         self._run(args)
 
     def snapshots(self) -> None:

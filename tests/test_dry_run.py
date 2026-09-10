@@ -98,12 +98,17 @@ class DryRunTests(unittest.TestCase):
         runner = ResticRunner(ResticConfig(binary="restic"), dry_run=True)
         stdout = io.StringIO()
 
-        with patch("backupdock.restic.subprocess.run") as subprocess_run, contextlib.redirect_stdout(stdout):
+        with (
+            patch("backupdock.restic.subprocess.run") as subprocess_run,
+            patch("backupdock.restic.subprocess.Popen") as subprocess_popen,
+            contextlib.redirect_stdout(stdout),
+        ):
             runner.preflight()
             runner.backup([Path("/data/example")], "compose:app")
             runner.backup([Path("/data/example")], "compose:app", preseed=True)
 
         subprocess_run.assert_not_called()
+        subprocess_popen.assert_not_called()
         output = stdout.getvalue()
         self.assertIn("DRY-RUN restic snapshots --json", output)
         self.assertIn("DRY-RUN restic backup --tag backupdock --tag backupdock-group=compose:app /data/example", output)

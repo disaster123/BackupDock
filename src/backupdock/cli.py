@@ -65,6 +65,7 @@ def _parser() -> argparse.ArgumentParser:
     source_parser.set_defaults(_internal_source_command=True)
     source_parser.add_argument("--project", action="append", default=[], help=argparse.SUPPRESS)
     source_parser.add_argument("--preseed", action="store_true", help=argparse.SUPPRESS)
+    source_parser.add_argument("--progress", action="store_true", help=argparse.SUPPRESS)
     source_parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
 
     init_parser = subparsers.add_parser("init", help="Initialize a local or remote Restic repository")
@@ -163,8 +164,12 @@ def _run_backup(
     *,
     dry_run: bool,
     preseed: bool = False,
+    progress: bool | None = None,
 ) -> None:
-    restic = ResticRunner(config.restic, dry_run=dry_run)
+    if progress is None:
+        restic = ResticRunner(config.restic, dry_run=dry_run)
+    else:
+        restic = ResticRunner(config.restic, dry_run=dry_run, progress=progress)
     docker = DockerBackend(dry_run=dry_run)
     try:
         groups, host_path_sources = _discover(config, docker)
@@ -236,7 +241,13 @@ def _write_source_session_config(config_yaml: str) -> tuple[Path, Path]:
     return session_dir, config_path
 
 
-def _run_source_backup(projects: list[str], *, dry_run: bool, preseed: bool = False) -> None:
+def _run_source_backup(
+    projects: list[str],
+    *,
+    dry_run: bool,
+    preseed: bool = False,
+    progress: bool = False,
+) -> None:
     repository_password, rest_server_username, rest_server_password, config_yaml = (
         _read_source_payload()
     )
@@ -264,7 +275,16 @@ def _run_source_backup(projects: list[str], *, dry_run: bool, preseed: bool = Fa
         os.environ.pop("RESTIC_PASSWORD_COMMAND", None)
         os.environ["RESTIC_REST_USERNAME"] = rest_server_username
         os.environ["RESTIC_REST_PASSWORD"] = rest_server_password
-        _run_backup(source_config, projects, dry_run=dry_run, preseed=preseed)
+        if progress:
+            _run_backup(
+                source_config,
+                projects,
+                dry_run=dry_run,
+                preseed=preseed,
+                progress=True,
+            )
+        else:
+            _run_backup(source_config, projects, dry_run=dry_run, preseed=preseed)
     finally:
         for key, value in previous.items():
             if value is None:
@@ -292,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.project,
                 dry_run=bool(args.dry_run),
                 preseed=bool(args.preseed),
+                progress=bool(args.progress),
             )
             return 0
 
