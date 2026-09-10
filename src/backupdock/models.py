@@ -48,6 +48,7 @@ class BackupGroup:
     compose_project: str | None
     containers: list[ContainerInfo] = field(default_factory=list)
     sources: list[BackupSource] = field(default_factory=list)
+    excluded_sources: list[BackupSource] = field(default_factory=list)
 
     @property
     def running_containers(self) -> list[ContainerInfo]:
