@@ -160,11 +160,15 @@ class ResticRunner:
         process: subprocess.Popen[str] | None = None
         progress_width = 0
         summary: dict | None = None
+        env = self._env()
+        # Restic disables periodic progress on non-interactive outputs. Its stdout is
+        # intentionally piped here for JSON parsing, so explicitly request updates.
+        env["RESTIC_PROGRESS_FPS"] = "2"
 
         try:
             process = subprocess.Popen(
                 command,
-                env=self._env(),
+                env=env,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
