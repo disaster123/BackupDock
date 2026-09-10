@@ -85,11 +85,11 @@ The installer:
 - creates `/opt/backupdock/venv`,
 - installs/upgrades BackupDock and all Python dependencies only inside that virtual environment,
 - creates `/usr/bin/backupdock` as a symlink to the venv command,
-- creates `/etc/backupdock/config.yaml` from `config.yaml.example` on first installation,
-- never overwrites an existing `/etc/backupdock/config.yaml`,
+- always installs or updates `/etc/backupdock/config.yaml.example` from the repository example,
+- never creates or overwrites `/etc/backupdock/config.yaml`,
 - creates `/var/lib/backupdock` for BackupDock state.
 
-Running the installer again after updating the Git checkout upgrades the installed version:
+Running the installer again after updating the Git checkout upgrades the installed version and refreshes the example configuration:
 
 ```bash
 git pull
@@ -138,7 +138,20 @@ The default configuration path is:
 
 A different file can be selected with `--config`.
 
-The repository contains [`config.yaml.example`](config.yaml.example). The installer copies it to `/etc/backupdock/config.yaml` only when that file does not already exist.
+The repository contains [`config.yaml.example`](config.yaml.example). The installer always copies the current example to:
+
+```text
+/etc/backupdock/config.yaml.example
+```
+
+The installer deliberately does **not** create the real configuration. Create it explicitly when needed:
+
+```bash
+sudo cp /etc/backupdock/config.yaml.example /etc/backupdock/config.yaml
+sudo editor /etc/backupdock/config.yaml
+```
+
+If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, BackupDock writes a warning to `stderr` and continues with built-in defaults.
 
 Minimal example using Restic's standard environment variables:
 
