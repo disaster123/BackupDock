@@ -19,6 +19,8 @@ class ConfigTests(unittest.TestCase):
 backup:
   exclude_volumes:
     - local_cache
+  ignore_containers:
+    - local-temporary
 
 projects:
   pbs:
@@ -31,6 +33,7 @@ projects:
             config = load_config(config_path)
 
             self.assertEqual(config.backup.exclude_volumes, ("local_cache",))
+            self.assertEqual(config.backup.ignore_containers, ("local-temporary",))
             self.assertEqual(config.projects["pbs"].exclude_volumes, ("pbs_backups",))
 
     def test_remote_configuration_and_source_settings_are_loaded(self) -> None:
@@ -51,6 +54,8 @@ remotes:
       - /srv/remote-cache
     exclude_volumes:
       - remote_global_cache
+    ignore_containers:
+      - docker-prod-temporary
     projects:
       pbs:
         extra_paths:
@@ -84,6 +89,7 @@ remotes:
             self.assertEqual(remote.host_paths, (Path("/etc/remote-static"),))
             self.assertEqual(remote.exclude_paths, (Path("/srv/remote-cache"),))
             self.assertEqual(remote.exclude_volumes, ("remote_global_cache",))
+            self.assertEqual(remote.ignore_containers, ("docker-prod-temporary",))
             self.assertEqual(remote.projects["pbs"].extra_paths, (Path("/srv/pbs-extra"),))
             self.assertEqual(remote.projects["pbs"].exclude_volumes, ("pbs_backups",))
             self.assertEqual(remote.source_command, ("sudo", "backupdock"))
@@ -99,6 +105,8 @@ remotes:
 backup:
   exclude_volumes:
     - local-volume
+  ignore_containers:
+    - local-worker
 projects:
   app:
     exclude_volumes:
@@ -112,6 +120,8 @@ remotes:
     rest_server_password_file: /tmp/rest-server-password
     exclude_volumes:
       - remote-volume
+    ignore_containers:
+      - remote-worker
     projects:
       app:
         exclude_volumes:
@@ -124,8 +134,10 @@ remotes:
             remote = config.remotes["docker-prod"]
 
             self.assertEqual(config.backup.exclude_volumes, ("local-volume",))
+            self.assertEqual(config.backup.ignore_containers, ("local-worker",))
             self.assertEqual(config.projects["app"].exclude_volumes, ("local-app-volume",))
             self.assertEqual(remote.exclude_volumes, ("remote-volume",))
+            self.assertEqual(remote.ignore_containers, ("remote-worker",))
             self.assertEqual(remote.projects["app"].exclude_volumes, ("remote-app-volume",))
 
     def test_remote_requires_password_file(self) -> None:
@@ -173,6 +185,7 @@ remotes:
             self.assertEqual(config.backup.state_dir, Path("/var/lib/backupdock"))
             self.assertTrue(config.backup.include_compose_metadata)
             self.assertEqual(config.backup.exclude_volumes, ())
+            self.assertEqual(config.backup.ignore_containers, ())
             self.assertEqual(config.projects, {})
             self.assertEqual(config.remotes, {})
 
