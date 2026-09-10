@@ -15,8 +15,8 @@ restic:
   # RESTIC_PASSWORD_FILE environment variables.
   #
   # Remote mode does not forward repository/password_file to the source host.
-  # The tunnel repository URL is generated for the session, and the password
-  # comes from remotes.<name>.password_file on the controller.
+  # The tunnel repository URL is generated for the session, and the repository
+  # password comes from remotes.<name>.password_file on the controller.
   # repository: "sftp:backup@example:/backups/docker-host"
   # password_file: "/root/.config/restic/password"
 
@@ -57,7 +57,7 @@ projects: {}
 # Optional controller-side configuration. This section stays on the backup
 # server and is never included in the temporary source configuration.
 # The backup server connects to the Docker host and opens a temporary reverse
-# tunnel to a loopback-only, append-only rest-server.
+# tunnel to a loopback-only, authenticated, append-only rest-server.
 # Local `backupdock backup` does not use this section.
 remotes: {}
 # remotes:
@@ -65,6 +65,8 @@ remotes: {}
 #     ssh_target: "root@docker-prod.example"
 #     password_file: "/root/.config/restic/docker-prod.password"
 #     repository_path: "docker-prod"
+#     rest_server_username: "docker-prod"
+#     rest_server_password_file: "/root/.config/restic/docker-prod.rest-server-password"
 #     local_rest_server_host: "127.0.0.1"
 #     local_rest_server_port: 8000
 #     remote_tunnel_port: 18080
