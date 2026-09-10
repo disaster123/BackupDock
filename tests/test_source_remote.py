@@ -58,13 +58,13 @@ class SourceRemoteTests(unittest.TestCase):
             root = Path(directory)
             runtime_dir = root / "run"
             local_config = root / "config.yaml"
-            local_config.write_text("backup:\n  stop_timeout_seconds: 999\n", encoding="utf-8")
+            local_config.write_text("backup:\n  include_compose_metadata: false\n", encoding="utf-8")
             source_yaml = """
 restic:
   repository: "rest:http://127.0.0.1:18080/source"
 backup:
   state_dir: "/var/lib/backupdock"
-  stop_timeout_seconds: 30
+  include_compose_metadata: true
 projects:
   pbs:
     exclude_volumes:
@@ -126,7 +126,7 @@ retention:
                         os.environ[key] = value
 
             source_config = observed["config"]
-            self.assertEqual(source_config.backup.stop_timeout_seconds, 30)
+            self.assertTrue(source_config.backup.include_compose_metadata)
             self.assertEqual(source_config.restic.repository, "rest:http://127.0.0.1:18080/source")
             self.assertEqual(source_config.projects["pbs"].exclude_volumes, ("pbs-backups",))
             self.assertFalse(source_config.retention.after_backup)
