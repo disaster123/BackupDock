@@ -52,8 +52,8 @@ class RecordingRestic:
     def preflight(self) -> None:
         self.actions.append(("preflight",))
 
-    def backup(self, paths, group_key: str) -> None:
-        self.actions.append(("backup", tuple(paths), group_key))
+    def backup(self, paths, group_key: str, *, preseed: bool = False) -> None:
+        self.actions.append(("backup", tuple(paths), group_key, preseed))
 
     def forget(self, retention) -> None:
         self.actions.append(("forget", retention))
@@ -89,6 +89,7 @@ class DryRunTests(unittest.TestCase):
             self.assertEqual(docker.actions[1], ("stop", "id-db"))
             self.assertEqual(restic.actions[1][0], "backup")
             self.assertEqual(restic.actions[1][2], "compose:app")
+            self.assertFalse(restic.actions[1][3])
             self.assertEqual(docker.actions[2], ("ensure_running", "id-db"))
             self.assertEqual(docker.actions[3], ("ensure_running", "id-web"))
             self.assertFalse((state_dir / "manifests" / "compose_app.json").exists())
@@ -100,11 +101,48 @@ class DryRunTests(unittest.TestCase):
         with patch("backupdock.restic.subprocess.run") as subprocess_run, contextlib.redirect_stdout(stdout):
             runner.preflight()
             runner.backup([Path("/data/example")], "compose:app")
+            runner.backup([Path("/data/example")], "compose:app", preseed=True)
 
         subprocess_run.assert_not_called()
         output = stdout.getvalue()
         self.assertIn("DRY-RUN restic snapshots --json", output)
         self.assertIn("DRY-RUN restic backup --tag backupdock --tag backupdock-group=compose:app /data/example", output)
+        self.assertIn("DRY-RUN restic backup --tag backupdock-preseed --tag backupdock-group=compose:app /data/example", output)
+
+    def test_preseed_dry_run_shows_preseed_before_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "data"
+            source.mkdir()
+            group = BackupGroup(
+                key="compose:app",
+                name="app",
+                compose_project="app",
+                containers=[_container("web")],
+                sources=[BackupSource(source, "bind")],
+            )
+            stdout = io.StringIO()
+            backend = object.__new__(DockerBackend)
+            backend.dry_run = True
+            backend._client = MagicMock()
+            backend._containers_by_id = {"id-web": _container("web")}
+            runner = ResticRunner(ResticConfig(binary="restic"), dry_run=True)
+
+            with contextlib.redirect_stdout(stdout):
+                BackupOrchestrator(
+                    backend,
+                    runner,
+                    AppConfig(backup=BackupConfig(state_dir=root / "state")),
+                    dry_run=True,
+                    preseed=True,
+                ).run([group], [])
+
+            output = stdout.getvalue()
+            preseed_position = output.index("--tag backupdock-preseed")
+            stop_position = output.index("DRY-RUN docker stop")
+            final_position = output.index("--tag backupdock --tag")
+            self.assertLess(preseed_position, stop_position)
+            self.assertLess(stop_position, final_position)
 
     def test_docker_dry_run_prints_mutations_without_sdk_calls(self) -> None:
         backend = object.__new__(DockerBackend)
@@ -122,6 +160,17 @@ class DryRunTests(unittest.TestCase):
         self.assertIn("DRY-RUN docker stop container=container-123", output)
         self.assertNotIn("timeout=", output)
         self.assertIn("DRY-RUN docker ensure-running container=container-123", output)
+
+    def test_real_docker_stop_passes_no_timeout_override(self) -> None:
+        backend = object.__new__(DockerBackend)
+        backend.dry_run = False
+        backend._client = MagicMock()
+        backend._containers_by_id = {}
+
+        backend.stop("container-123")
+
+        backend._client.containers.get.assert_called_once_with("container-123")
+        backend._client.containers.get.return_value.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":
