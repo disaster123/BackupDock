@@ -65,8 +65,14 @@ class CliDryRunTests(unittest.TestCase):
         self.assertEqual(result, 0)
         docker_class.assert_called_once_with(dry_run=True)
         restic_class.assert_called_once_with(config.restic, dry_run=True)
-        orchestrator_class.assert_called_once_with(docker, restic, config, dry_run=True)
-        orchestrator.run.assert_called_once_with([group], [])
+        orchestrator_class.assert_called_once_with(
+            docker,
+            restic,
+            config,
+            dry_run=True,
+            preseed=False,
+        )
+        orchestrator.run.assert_called_once_with([group], [], observed_groups=[group])
         docker.close.assert_called_once()
 
     def test_real_backup_constructs_same_components_without_dry_run(self) -> None:
@@ -93,8 +99,44 @@ class CliDryRunTests(unittest.TestCase):
         self.assertEqual(result, 0)
         docker_class.assert_called_once_with(dry_run=False)
         restic_class.assert_called_once_with(config.restic, dry_run=False)
-        orchestrator_class.assert_called_once_with(docker, restic, config, dry_run=False)
-        orchestrator.run.assert_called_once_with([group], [])
+        orchestrator_class.assert_called_once_with(
+            docker,
+            restic,
+            config,
+            dry_run=False,
+            preseed=False,
+        )
+        orchestrator.run.assert_called_once_with([group], [], observed_groups=[group])
+
+    def test_preseed_flag_is_passed_to_orchestrator(self) -> None:
+        docker = MagicMock()
+        restic = MagicMock()
+        orchestrator = MagicMock()
+        process_lock = MagicMock()
+        process_lock.__enter__.return_value = process_lock
+        process_lock.__exit__.return_value = None
+        config = AppConfig(backup=BackupConfig(state_dir=Path("/tmp/backupdock-test-state")))
+        group = _group(Path("/tmp/backupdock-test-source"))
+
+        with (
+            patch("backupdock.cli.load_config", return_value=config),
+            patch("backupdock.cli.DockerBackend", return_value=docker),
+            patch("backupdock.cli.ResticRunner", return_value=restic),
+            patch("backupdock.cli._discover", return_value=([group], [])),
+            patch("backupdock.cli.ProcessLock", return_value=process_lock),
+            patch("backupdock.cli.BackupOrchestrator", return_value=orchestrator) as orchestrator_class,
+            patch("backupdock.cli.signal.signal"),
+        ):
+            result = main(["backup", "--preseed"])
+
+        self.assertEqual(result, 0)
+        orchestrator_class.assert_called_once_with(
+            docker,
+            restic,
+            config,
+            dry_run=False,
+            preseed=True,
+        )
 
     def test_remote_init_uses_selected_remote_controller(self) -> None:
         remote = RemoteConfig(
