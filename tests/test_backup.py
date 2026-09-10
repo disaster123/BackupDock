@@ -35,8 +35,7 @@ class FakeDocker:
         self.stopped: list[str] = []
         self.started: list[str] = []
 
-    def stop(self, container_id: str, timeout: int) -> None:
-        del timeout
+    def stop(self, container_id: str) -> None:
         if container_id == self.fail_stop:
             raise RuntimeError("stop failed")
         self.stopped.append(container_id)
