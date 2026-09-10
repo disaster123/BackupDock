@@ -25,6 +25,8 @@ class ContainerInfo:
     compose_environment_files: tuple[str, ...]
     mounts: tuple[MountInfo, ...]
     compose_dependencies: tuple[str, ...] = ()
+    auto_remove: bool = False
+    ignored: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +52,8 @@ class BackupGroup:
     containers: list[ContainerInfo] = field(default_factory=list)
     sources: list[BackupSource] = field(default_factory=list)
     excluded_sources: list[BackupSource] = field(default_factory=list)
+    ignored_sources: list[BackupSource] = field(default_factory=list)
 
     @property
     def running_containers(self) -> list[ContainerInfo]:
-        return [container for container in self.containers if container.running]
+        return [container for container in self.containers if container.running and not container.ignored]
