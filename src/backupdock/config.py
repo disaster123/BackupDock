@@ -10,7 +10,6 @@ import yaml
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/backupdock/config.yaml")
-LEGACY_CONFIG_PATH = Path("/etc/backupdock/config.toml")
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,11 +125,6 @@ def load_config(path: Path | None = None) -> AppConfig:
             )
         if explicit_path:
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
-        if LEGACY_CONFIG_PATH.exists():
-            raise RuntimeError(
-                f"Legacy configuration found at {LEGACY_CONFIG_PATH}. "
-                f"BackupDock 0.2+ uses YAML; migrate it to {DEFAULT_CONFIG_PATH}."
-            )
         return AppConfig()
 
     with config_path.open("r", encoding="utf-8") as handle:
