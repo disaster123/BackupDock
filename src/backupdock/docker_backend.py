@@ -169,11 +169,11 @@ class DockerBackend:
         service = f" service={container.compose_service}" if container.compose_service else ""
         return f"container={container.name}{service} id={container_id[:12]}"
 
-    def stop(self, container_id: str, timeout: int) -> None:
+    def stop(self, container_id: str) -> None:
         if self.dry_run:
-            print(f"DRY-RUN docker stop {self._describe_container(container_id)} timeout={timeout}s")
+            print(f"DRY-RUN docker stop {self._describe_container(container_id)}")
             return
-        self._client.containers.get(container_id).stop(timeout=timeout)
+        self._client.containers.get(container_id).stop()
 
     def start(self, container_id: str) -> None:
         if self.dry_run:
@@ -200,7 +200,7 @@ class FakeDockerBackendProtocol:
     def list_containers(self) -> Iterable[ContainerInfo]:
         raise NotImplementedError
 
-    def stop(self, container_id: str, timeout: int) -> None:
+    def stop(self, container_id: str) -> None:
         raise NotImplementedError
 
     def start(self, container_id: str) -> None:
