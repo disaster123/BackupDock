@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from backupdock.cli import main
-from backupdock.config import AppConfig, BackupConfig
+from backupdock.config import AppConfig, BackupConfig, RemoteConfig
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
 
 
@@ -95,6 +95,28 @@ class CliDryRunTests(unittest.TestCase):
         restic_class.assert_called_once_with(config.restic, dry_run=False)
         orchestrator_class.assert_called_once_with(docker, restic, config, dry_run=False)
         orchestrator.run.assert_called_once_with([group], [])
+
+    def test_remote_init_uses_selected_remote_controller(self) -> None:
+        remote = RemoteConfig(
+            ssh_target="root@docker-prod.example",
+            password_file=Path("/repository-password"),
+            repository_path="docker-prod",
+            rest_server_username="docker-prod",
+            rest_server_password_file=Path("/rest-server-password"),
+        )
+        config = AppConfig(remotes={"docker-prod": remote})
+
+        with (
+            patch("backupdock.cli.load_config", return_value=config),
+            patch("backupdock.cli.RemoteBackupController") as controller_class,
+            patch("backupdock.cli.ResticRunner") as restic_class,
+        ):
+            result = main(["init", "--remote", "docker-prod"])
+
+        self.assertEqual(result, 0)
+        controller_class.assert_called_once_with(config, remote)
+        controller_class.return_value.init_repository.assert_called_once_with()
+        restic_class.assert_not_called()
 
 
 if __name__ == "__main__":
