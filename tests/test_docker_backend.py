@@ -26,6 +26,20 @@ class DockerBackendTests(unittest.TestCase):
 
         self.assertEqual(container.compose_dependencies, ("db", "redis"))
 
+    def test_parses_auto_remove_from_host_config(self) -> None:
+        attrs = {
+            "Id": "worker-id",
+            "Name": "/temporary-worker",
+            "State": {"Running": True},
+            "Config": {"Labels": {}},
+            "HostConfig": {"AutoRemove": True},
+            "Mounts": [],
+        }
+
+        container = parse_container_attrs(attrs)
+
+        self.assertTrue(container.auto_remove)
+
     def test_merges_runtime_links_volumes_from_and_network_mode_dependencies(self) -> None:
         db_attrs = {
             "Id": "db-id-1234567890",
