@@ -15,6 +15,7 @@ from backupdock.remote import (
     REMOTE_PROTOCOL_VERSION,
     RemoteBackupController,
     RemoteBackupError,
+    controller_repository_url,
     repository_url,
 )
 
@@ -54,6 +55,23 @@ class RemoteBackupTests(unittest.TestCase):
             "rest:http://127.0.0.1:19090/repos/docker%20host",
         )
 
+    def test_controller_repository_url_uses_local_rest_server(self) -> None:
+        config = RemoteConfig(
+            ssh_target="root@docker-host",
+            password_file=Path("/secret"),
+            repository_path="repos/docker host",
+            rest_server_username="docker-host",
+            rest_server_password_file=Path("/rest-secret"),
+            local_rest_server_host="127.0.0.1",
+            local_rest_server_port=8100,
+            remote_tunnel_port=19090,
+        )
+
+        self.assertEqual(
+            controller_repository_url(config),
+            "rest:http://127.0.0.1:8100/repos/docker%20host",
+        )
+
     def test_command_contains_reverse_forward_and_source_backup(self) -> None:
         remote = RemoteConfig(
             ssh_target="backup-source",
@@ -76,6 +94,51 @@ class RemoteBackupTests(unittest.TestCase):
         self.assertNotIn("--repository", command)
         self.assertNotIn("docker-host", command[-1])
         self.assertEqual(command[-3:], ["--project", "nextcloud", "--dry-run"])
+
+    def test_remote_init_uses_controller_rest_server_and_validates_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            password_file = root / "repository-password"
+            rest_password_file = root / "rest-password"
+            password_file.write_text("repository-value\n", encoding="utf-8")
+            rest_password_file.write_text("rest-value\n", encoding="utf-8")
+            remote = self._remote(password_file, rest_password_file)
+            controller = RemoteBackupController(AppConfig(), remote)
+
+            with (
+                patch("backupdock.remote.ResticRunner") as runner_class,
+                patch("backupdock.remote.subprocess.run") as subprocess_run,
+            ):
+                controller.init_repository()
+
+            subprocess_run.assert_not_called()
+            runner_class.assert_called_once()
+            restic_config = runner_class.call_args.args[0]
+            self.assertEqual(
+                restic_config.repository,
+                "rest:http://127.0.0.1:8000/docker-host",
+            )
+            self.assertEqual(restic_config.password_file, password_file)
+            self.assertEqual(
+                runner_class.call_args.kwargs["env_overrides"],
+                {
+                    "RESTIC_REST_USERNAME": "docker-host",
+                    "RESTIC_REST_PASSWORD": "rest-value",
+                },
+            )
+            runner_class.return_value.init.assert_called_once_with()
+
+    def test_remote_init_rejects_missing_secret_before_restic(self) -> None:
+        controller = self._controller(
+            Path("/definitely/not/present"),
+            Path("/also/not/present"),
+        )
+
+        with patch("backupdock.remote.ResticRunner") as runner_class:
+            with self.assertRaisesRegex(RemoteBackupError, "repository password file not found"):
+                controller.init_repository()
+
+        runner_class.assert_not_called()
 
     def test_version_is_checked_before_remote_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
