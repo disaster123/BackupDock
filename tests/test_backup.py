@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backupdock.backup import BackupOrchestrator
+from backupdock.backup import BackupError, BackupOrchestrator
 from backupdock.config import AppConfig, BackupConfig
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
 
@@ -13,6 +13,9 @@ def make_container(
     name: str,
     running: bool,
     dependencies: tuple[str, ...] = (),
+    *,
+    auto_remove: bool = False,
+    ignored: bool = False,
 ) -> ContainerInfo:
     return ContainerInfo(
         id=f"id-{name}",
@@ -25,6 +28,8 @@ def make_container(
         compose_environment_files=(),
         mounts=(),
         compose_dependencies=dependencies,
+        auto_remove=auto_remove,
+        ignored=ignored,
     )
 
 
@@ -53,17 +58,20 @@ class FakeDocker:
 
 
 class FakeRestic:
-    def __init__(self, fail_backup: bool = False) -> None:
+    def __init__(self, fail_backup: bool = False, fail_preseed: bool = False) -> None:
         self.fail_backup = fail_backup
-        self.backups: list[tuple[list[Path], str]] = []
+        self.fail_preseed = fail_preseed
+        self.backups: list[tuple[list[Path], str, bool]] = []
         self.preflight_count = 0
 
     def preflight(self) -> None:
         self.preflight_count += 1
 
-    def backup(self, paths, group_key: str) -> None:
-        self.backups.append((list(paths), group_key))
-        if self.fail_backup:
+    def backup(self, paths, group_key: str, *, preseed: bool = False) -> None:
+        self.backups.append((list(paths), group_key, preseed))
+        if preseed and self.fail_preseed:
+            raise RuntimeError("preseed failed")
+        if not preseed and self.fail_backup:
             raise RuntimeError("backup failed")
 
     def forget(self, retention) -> None:
@@ -98,6 +106,7 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(docker.stopped, ["id-web", "id-db"])
             self.assertEqual(docker.started, ["id-db", "id-web"])
             self.assertEqual(len(restic.backups), 1)
+            self.assertFalse(restic.backups[0][2])
 
     def test_containers_restart_when_restic_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +187,132 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(docker.stopped, [])
             self.assertEqual(docker.started, [])
             self.assertEqual(len(restic.backups), 1)
+
+    def test_auto_remove_container_aborts_before_preflight_or_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "data"
+            source.mkdir()
+            group = BackupGroup(
+                key="compose:app",
+                name="app",
+                compose_project="app",
+                containers=[make_container("worker", True, auto_remove=True)],
+                sources=[BackupSource(source, "bind")],
+            )
+            docker = FakeDocker()
+            restic = FakeRestic()
+
+            with self.assertRaisesRegex(BackupError, "auto-remove"):
+                BackupOrchestrator(docker, restic, AppConfig()).run([group], [])
+
+            self.assertEqual(restic.preflight_count, 0)
+            self.assertEqual(restic.backups, [])
+            self.assertEqual(docker.stopped, [])
+
+    def test_ignored_auto_remove_container_is_not_stopped_when_storage_is_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "regular"
+            ignored_source = root / "temporary"
+            source.mkdir()
+            ignored_source.mkdir()
+            group = BackupGroup(
+                key="compose:app",
+                name="app",
+                compose_project="app",
+                containers=[
+                    make_container("regular", True),
+                    make_container("temporary", True, auto_remove=True, ignored=True),
+                ],
+                sources=[BackupSource(source, "bind", container="regular")],
+                ignored_sources=[
+                    BackupSource(
+                        ignored_source,
+                        "bind",
+                        container="temporary",
+                        required=False,
+                    )
+                ],
+            )
+            docker = FakeDocker()
+            restic = FakeRestic()
+
+            BackupOrchestrator(docker, restic, AppConfig()).run([group], [])
+
+            self.assertEqual(docker.stopped, ["id-regular"])
+            self.assertEqual(docker.started, ["id-regular"])
+
+    def test_ignored_running_writer_overlapping_backup_data_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared = root / "shared"
+            shared.mkdir()
+            group = BackupGroup(
+                key="compose:app",
+                name="app",
+                compose_project="app",
+                containers=[
+                    make_container("regular", True),
+                    make_container("temporary", True, auto_remove=True, ignored=True),
+                ],
+                sources=[BackupSource(shared, "bind", container="regular")],
+                ignored_sources=[
+                    BackupSource(
+                        shared,
+                        "bind",
+                        container="temporary",
+                        required=False,
+                    )
+                ],
+            )
+            docker = FakeDocker()
+            restic = FakeRestic()
+
+            with self.assertRaisesRegex(BackupError, "overlapping selected backup data"):
+                BackupOrchestrator(docker, restic, AppConfig()).run([group], [])
+
+            self.assertEqual(restic.preflight_count, 0)
+            self.assertEqual(docker.stopped, [])
+
+    def test_preseed_runs_before_final_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "data"
+            source.mkdir()
+            docker = FakeDocker()
+            restic = FakeRestic()
+
+            BackupOrchestrator(
+                docker,
+                restic,
+                AppConfig(backup=BackupConfig(state_dir=root / "state")),
+                preseed=True,
+            ).run([self._group(source)], [])
+
+            self.assertEqual([item[2] for item in restic.backups], [True, False])
+            self.assertEqual(docker.stopped, ["id-web", "id-db"])
+            self.assertEqual(docker.started, ["id-db", "id-web"])
+
+    def test_preseed_failure_does_not_stop_containers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "data"
+            source.mkdir()
+            docker = FakeDocker()
+            restic = FakeRestic(fail_preseed=True)
+
+            with self.assertRaisesRegex(RuntimeError, "preseed failed"):
+                BackupOrchestrator(
+                    docker,
+                    restic,
+                    AppConfig(backup=BackupConfig(state_dir=root / "state")),
+                    preseed=True,
+                ).run([self._group(source)], [])
+
+            self.assertEqual(docker.stopped, [])
+            self.assertEqual(docker.started, [])
+            self.assertEqual([item[2] for item in restic.backups], [True])
 
 
 if __name__ == "__main__":
