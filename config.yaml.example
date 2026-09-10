@@ -3,6 +3,7 @@
 #
 # Local mode:
 #   This file lives on the Docker host and is used by `backupdock backup`.
+#   Top-level backup.host_paths/exclude_* and projects apply to this local host.
 #
 # Remote mode:
 #   This file lives only on the backup/controller server. BackupDock generates
@@ -20,32 +21,25 @@ restic:
   # repository: "sftp:backup@example:/backups/docker-host"
   # password_file: "/root/.config/restic/password"
 
-  # Optional arguments passed only to `restic backup`. These are also included
-  # in the generated source configuration for remote backups.
+  # Optional arguments passed only to `restic backup`. These are shared defaults
+  # for local and remote backup runs.
   backup_args: []
 
 backup:
-  # In remote mode these source-side settings are copied into the temporary
-  # controller-provided configuration.
+  # Shared BackupDock behavior for local and remote source hosts.
   state_dir: "/var/lib/backupdock"
   stop_timeout_seconds: 30
   include_compose_metadata: true
 
-  # Static host data that is not managed by Docker. These paths are backed up
-  # separately without stopping any container. Leave empty unless needed.
+  # Local-mode source settings. Remote hosts use the corresponding fields below
+  # remotes.<name> instead.
   host_paths: []
-
-  # Global host-path exclusions. No paths are excluded by default.
   exclude_paths: []
-
-  # Global Docker volume-name exclusions. Prefer project-specific exclusions
-  # when only one Compose project should omit a volume.
   exclude_volumes: []
 
-# Add entries below when a Compose project needs additional paths or exclusions.
-# In remote mode this section is sent from the controller to the source host for
-# the duration of the backup; no permanent source-side config is required.
-# The key must match the Compose project name shown by `backupdock inventory`.
+# Local-mode project-specific source settings. These apply only when running
+# `backupdock backup` on this host. Remote hosts have their own projects mapping
+# below remotes.<name>.projects.
 projects: {}
 # projects:
 #   my-compose-project:
@@ -54,11 +48,9 @@ projects: {}
 #     exclude_volumes:
 #       - "my-compose-project_large-backups"
 
-# Optional controller-side configuration. This section stays on the backup
-# server and is never included in the temporary source configuration.
-# The backup server connects to the Docker host and opens a temporary reverse
-# tunnel to a loopback-only, authenticated, append-only rest-server.
-# Local `backupdock backup` does not use this section.
+# Optional controller-side configuration. Each remote contains its own
+# source-specific host paths, exclusions, and project rules. This allows one
+# controller to manage multiple Docker source hosts without mixing their rules.
 remotes: {}
 # remotes:
 #   docker-prod:
@@ -70,6 +62,18 @@ remotes: {}
 #     local_rest_server_host: "127.0.0.1"
 #     local_rest_server_port: 8000
 #     remote_tunnel_port: 18080
+#
+#     # Source-specific settings for this Docker host.
+#     host_paths: []
+#     exclude_paths: []
+#     exclude_volumes: []
+#     projects:
+#       my-compose-project:
+#         extra_paths: []
+#         exclude_paths: []
+#         exclude_volumes:
+#           - "my-compose-project_large-backups"
+#
 #     source_command:
 #       - "backupdock"
 #     ssh_options: []
