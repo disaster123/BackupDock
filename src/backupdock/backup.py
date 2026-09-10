@@ -46,8 +46,12 @@ def _usable_source(source: BackupSource) -> bool:
     return False
 
 
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
 def _minimal_backup_paths(sources: list[BackupSource]) -> list[Path]:
-    paths = sorted({source.path.resolve() for source in sources}, key=lambda path: (len(path.parts), str(path)))
+    paths = sorted({_absolute_path(source.path) for source in sources}, key=lambda path: (len(path.parts), str(path)))
     minimal: list[Path] = []
     for path in paths:
         if any(path == parent or parent in path.parents for parent in minimal):
