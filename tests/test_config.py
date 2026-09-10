@@ -43,6 +43,8 @@ remotes:
     ssh_target: root@docker-prod.example
     password_file: /root/.config/restic/docker-prod.password
     repository_path: docker-prod
+    rest_server_username: docker-prod
+    rest_server_password_file: /root/.config/restic/docker-prod.rest-server-password
     source_command:
       - sudo
       - backupdock
@@ -62,6 +64,11 @@ remotes:
             self.assertEqual(remote.ssh_target, "root@docker-prod.example")
             self.assertEqual(remote.password_file, Path("/root/.config/restic/docker-prod.password"))
             self.assertEqual(remote.repository_path, "docker-prod")
+            self.assertEqual(remote.rest_server_username, "docker-prod")
+            self.assertEqual(
+                remote.rest_server_password_file,
+                Path("/root/.config/restic/docker-prod.rest-server-password"),
+            )
             self.assertEqual(remote.source_command, ("sudo", "backupdock"))
             self.assertEqual(remote.ssh_options, ("-i", "/root/.ssh/backupdock"))
             self.assertEqual(remote.local_rest_server_port, 8100)
@@ -76,11 +83,30 @@ remotes:
   docker-prod:
     ssh_target: root@docker-prod.example
     repository_path: docker-prod
+    rest_server_username: docker-prod
+    rest_server_password_file: /root/.config/restic/docker-prod.rest-server-password
 """.lstrip(),
                 encoding="utf-8",
             )
 
             with self.assertRaisesRegex(ValueError, "password_file"):
+                load_config(config_path)
+
+    def test_remote_requires_rest_server_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.yaml"
+            config_path.write_text(
+                """
+remotes:
+  docker-prod:
+    ssh_target: root@docker-prod.example
+    password_file: /root/.config/restic/docker-prod.password
+    repository_path: docker-prod
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "rest_server_password_file"):
                 load_config(config_path)
 
     def test_empty_yaml_file_uses_defaults(self) -> None:
