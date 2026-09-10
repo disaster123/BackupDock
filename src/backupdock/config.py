@@ -24,7 +24,6 @@ class ResticConfig:
 @dataclass(frozen=True, slots=True)
 class BackupConfig:
     state_dir: Path = Path("/var/lib/backupdock")
-    stop_timeout_seconds: int = 30
     include_compose_metadata: bool = True
     host_paths: tuple[Path, ...] = ()
     exclude_paths: tuple[Path, ...] = ()
@@ -204,11 +203,6 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
         password_file_raw = os.environ["RESTIC_PASSWORD_FILE"]
 
     backup_args = _strings(restic_data.get("backup_args"), field_name="restic.backup_args")
-
-    stop_timeout = backup_data.get("stop_timeout_seconds", 30)
-    if not isinstance(stop_timeout, int) or isinstance(stop_timeout, bool) or stop_timeout < 1:
-        raise ValueError("backup.stop_timeout_seconds must be a positive integer")
-
     project_configs = _project_configs(projects_data, field_name="projects")
 
     remote_configs: dict[str, RemoteConfig] = {}
@@ -307,7 +301,6 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
         ),
         backup=BackupConfig(
             state_dir=Path(state_dir_raw).expanduser(),
-            stop_timeout_seconds=stop_timeout,
             include_compose_metadata=_boolean(
                 backup_data.get("include_compose_metadata"),
                 field_name="backup.include_compose_metadata",
@@ -351,7 +344,6 @@ def render_source_config(config: AppConfig, remote: RemoteConfig, *, repository:
         },
         "backup": {
             "state_dir": str(config.backup.state_dir),
-            "stop_timeout_seconds": config.backup.stop_timeout_seconds,
             "include_compose_metadata": config.backup.include_compose_metadata,
             "host_paths": [str(path) for path in remote.host_paths],
             "exclude_paths": [str(path) for path in remote.exclude_paths],
