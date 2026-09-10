@@ -38,8 +38,8 @@ class RecordingDocker:
     def __init__(self) -> None:
         self.actions: list[tuple] = []
 
-    def stop(self, container_id: str, timeout: int) -> None:
-        self.actions.append(("stop", container_id, timeout))
+    def stop(self, container_id: str) -> None:
+        self.actions.append(("stop", container_id))
 
     def ensure_running(self, container_id: str) -> None:
         self.actions.append(("ensure_running", container_id))
@@ -85,8 +85,8 @@ class DryRunTests(unittest.TestCase):
                 BackupOrchestrator(docker, restic, config, dry_run=True).run([group], [])
 
             self.assertEqual(restic.actions[0], ("preflight",))
-            self.assertEqual(docker.actions[0], ("stop", "id-web", 30))
-            self.assertEqual(docker.actions[1], ("stop", "id-db", 30))
+            self.assertEqual(docker.actions[0], ("stop", "id-web"))
+            self.assertEqual(docker.actions[1], ("stop", "id-db"))
             self.assertEqual(restic.actions[1][0], "backup")
             self.assertEqual(restic.actions[1][2], "compose:app")
             self.assertEqual(docker.actions[2], ("ensure_running", "id-db"))
@@ -114,12 +114,13 @@ class DryRunTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with contextlib.redirect_stdout(stdout):
-            backend.stop("container-123", 30)
+            backend.stop("container-123")
             backend.ensure_running("container-123")
 
         backend._client.containers.get.assert_not_called()
         output = stdout.getvalue()
-        self.assertIn("DRY-RUN docker stop container=container-123 timeout=30s", output)
+        self.assertIn("DRY-RUN docker stop container=container-123", output)
+        self.assertNotIn("timeout=", output)
         self.assertIn("DRY-RUN docker ensure-running container=container-123", output)
 
 
