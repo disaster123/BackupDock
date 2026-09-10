@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,11 @@ def load_config(path: Path | None = None) -> AppConfig:
     explicit_path = path is not None
 
     if not config_path.exists():
+        if config_path == DEFAULT_CONFIG_PATH:
+            print(
+                f"backupdock: warning: configuration file not found: {DEFAULT_CONFIG_PATH}; using defaults",
+                file=sys.stderr,
+            )
         if explicit_path:
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
         if LEGACY_CONFIG_PATH.exists():
