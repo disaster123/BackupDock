@@ -25,12 +25,14 @@ SOURCE_RUNTIME_DIR = Path("/run/backupdock")
 
 
 class BackupInterrupted(RuntimeError):
-    pass
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(f"Interrupted by signal {signum}")
 
 
 def _signal_handler(signum, frame) -> None:
     del frame
-    raise BackupInterrupted(f"Interrupted by signal {signum}")
+    raise BackupInterrupted(signum)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -370,8 +372,15 @@ def main(argv: list[str] | None = None) -> int:
 
         raise ValueError(f"Unsupported command: {args.command}")
 
+    except KeyboardInterrupt:
+        print(file=sys.stdout, flush=True)
+        print("backupdock: interrupted by SIGINT", file=sys.stderr)
+        return 128 + signal.SIGINT
+    except BackupInterrupted as exc:
+        print(file=sys.stdout, flush=True)
+        print(f"backupdock: {exc}", file=sys.stderr)
+        return 128 + exc.signum
     except (
-        BackupInterrupted,
         DiscoveryError,
         FileNotFoundError,
         LockError,
