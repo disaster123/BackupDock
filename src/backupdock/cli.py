@@ -64,7 +64,11 @@ def _parser() -> argparse.ArgumentParser:
     source_parser.add_argument("--project", action="append", default=[], help=argparse.SUPPRESS)
     source_parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
 
-    subparsers.add_parser("init", help="Initialize the configured Restic repository")
+    init_parser = subparsers.add_parser("init", help="Initialize a local or remote Restic repository")
+    init_parser.add_argument(
+        "--remote",
+        help="Initialize the repository configured for this remote on the controller",
+    )
     subparsers.add_parser("snapshots", help="List BackupDock Restic snapshots")
     subparsers.add_parser("check", help="Run restic check")
 
@@ -276,6 +280,13 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "backup":
             _run_backup(config, args.project, dry_run=bool(args.dry_run))
+            return 0
+
+        if args.command == "init" and args.remote:
+            remote_config = config.remotes.get(args.remote)
+            if remote_config is None:
+                raise ValueError(f"Unknown remote: {args.remote}")
+            RemoteBackupController(config, remote_config).init_repository()
             return 0
 
         restic = ResticRunner(config.restic)
