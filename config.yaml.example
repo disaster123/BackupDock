@@ -1,16 +1,32 @@
 # BackupDock has no built-in assumptions about where Docker data lives.
 # Bind mounts and Docker volumes are discovered from the Docker daemon.
+#
+# Local mode:
+#   This file lives on the Docker host and is used by `backupdock backup`.
+#
+# Remote mode:
+#   This file lives only on the backup/controller server. BackupDock generates
+#   a source-only configuration for each remote run and transfers it through
+#   the SSH session. A /etc/backupdock/config.yaml on the source host is ignored
+#   for remote backups and triggers a warning.
 
 restic:
-  # Either uncomment these values or use the standard RESTIC_REPOSITORY and
+  # Local mode can use these values or the standard RESTIC_REPOSITORY and
   # RESTIC_PASSWORD_FILE environment variables.
+  #
+  # Remote mode does not forward repository/password_file to the source host.
+  # The tunnel repository URL is generated for the session, and the password
+  # comes from remotes.<name>.password_file on the controller.
   # repository: "sftp:backup@example:/backups/docker-host"
   # password_file: "/root/.config/restic/password"
 
-  # Optional arguments passed only to `restic backup`.
+  # Optional arguments passed only to `restic backup`. These are also included
+  # in the generated source configuration for remote backups.
   backup_args: []
 
 backup:
+  # In remote mode these source-side settings are copied into the temporary
+  # controller-provided configuration.
   state_dir: "/var/lib/backupdock"
   stop_timeout_seconds: 30
   include_compose_metadata: true
@@ -27,6 +43,8 @@ backup:
   exclude_volumes: []
 
 # Add entries below when a Compose project needs additional paths or exclusions.
+# In remote mode this section is sent from the controller to the source host for
+# the duration of the backup; no permanent source-side config is required.
 # The key must match the Compose project name shown by `backupdock inventory`.
 projects: {}
 # projects:
@@ -36,9 +54,10 @@ projects: {}
 #     exclude_volumes:
 #       - "my-compose-project_large-backups"
 
-# Optional controller-side configuration for backup servers that initiate
-# backups through SSH. The backup server connects to the Docker host and opens
-# a temporary reverse tunnel to a loopback-only, append-only rest-server.
+# Optional controller-side configuration. This section stays on the backup
+# server and is never included in the temporary source configuration.
+# The backup server connects to the Docker host and opens a temporary reverse
+# tunnel to a loopback-only, append-only rest-server.
 # Local `backupdock backup` does not use this section.
 remotes: {}
 # remotes:
@@ -61,6 +80,9 @@ remotes: {}
 #     #   - "sudo"
 #     #   - "backupdock"
 
+# Retention belongs to the machine that has maintenance access to the
+# repository. Remote source backups always force after_backup/prune off because
+# the source reaches the repository only through an append-only endpoint.
 retention:
   after_backup: false
   prune: false
