@@ -91,7 +91,7 @@ install -m 0644 "${SOURCE_DIR}/config.yaml.example" "${CONFIG_EXAMPLE_FILE}"
 log "installed/updated example configuration at ${CONFIG_EXAMPLE_FILE}"
 
 if [[ ! -e "${CONFIG_FILE}" ]]; then
-    warn "${CONFIG_FILE} does not exist; copy and edit ${CONFIG_EXAMPLE_FILE} before running backups"
+    warn "${CONFIG_FILE} does not exist; this is expected on a remote source-only host, otherwise copy and edit ${CONFIG_EXAMPLE_FILE} before running local/controller backups"
 fi
 
 install -d -m 0700 "${STATE_DIR}"
