@@ -63,12 +63,13 @@ def parse_container_attrs(attrs: dict) -> ContainerInfo:
 class DockerBackend:
     """Small adapter around Docker SDK so orchestration remains testable."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, dry_run: bool = False) -> None:
         try:
             import docker
         except ImportError as exc:
             raise RuntimeError("Docker SDK for Python is not installed") from exc
 
+        self.dry_run = dry_run
         self._client = docker.from_env()
         self._client.ping()
 
@@ -76,12 +77,21 @@ class DockerBackend:
         return [parse_container_attrs(container.attrs) for container in self._client.containers.list(all=True)]
 
     def stop(self, container_id: str, timeout: int) -> None:
+        if self.dry_run:
+            print(f"DRY-RUN docker stop container={container_id} timeout={timeout}s")
+            return
         self._client.containers.get(container_id).stop(timeout=timeout)
 
     def start(self, container_id: str) -> None:
+        if self.dry_run:
+            print(f"DRY-RUN docker start container={container_id}")
+            return
         self._client.containers.get(container_id).start()
 
     def ensure_running(self, container_id: str) -> None:
+        if self.dry_run:
+            print(f"DRY-RUN docker ensure-running container={container_id}")
+            return
         container = self._client.containers.get(container_id)
         container.reload()
         if not bool((container.attrs.get("State") or {}).get("Running", False)):
