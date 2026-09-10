@@ -97,7 +97,7 @@ fi
 install -d -m 0700 "${STATE_DIR}"
 
 if ! "${VENV_DIR}/bin/python" -c 'import docker; client = docker.from_env(); client.ping(); client.close()' >/dev/null 2>&1; then
-    warn "Docker daemon is not reachable with the current environment; installation itself completed"
+    warn "Docker daemon is not reachable with the current environment; installation itself completed (expected on a controller-only backup server)"
 fi
 
 log "installed $("${BIN_LINK}" --version)"
