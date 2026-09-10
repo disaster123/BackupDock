@@ -110,6 +110,8 @@ Then BackupDock can be called directly:
 sudo backupdock inventory
 ```
 
+A permanent `/etc/backupdock/config.yaml` is required for normal local backups and on a remote backup controller. It is deliberately **not required on a source host that is used only through `remote-backup`**; that host receives a temporary controller-generated source configuration for each session.
+
 ### Uninstall
 
 Remove BackupDock itself while preserving configuration and state:
@@ -138,7 +140,7 @@ pip install -e .
 
 ## Configuration
 
-The default configuration path is:
+The default configuration path for local/controller operation is:
 
 ```text
 /etc/backupdock/config.yaml
@@ -159,9 +161,9 @@ sudo cp /etc/backupdock/config.yaml.example /etc/backupdock/config.yaml
 sudo editor /etc/backupdock/config.yaml
 ```
 
-If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, BackupDock writes a warning to `stderr` and continues with built-in defaults.
+If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, normal local/controller commands write a warning to `stderr` and continue with built-in defaults where possible.
 
-Minimal example using Restic's standard environment variables:
+Minimal local example using Restic's standard environment variables:
 
 ```yaml
 backup:
@@ -242,6 +244,7 @@ Recommended layout:
 ```text
 backup server                         Docker source
 -------------                         -------------
+/etc/backupdock/config.yaml           no permanent config required
 rest-server --append-only
 127.0.0.1:8000
        ^
@@ -255,9 +258,41 @@ rest-server --append-only
 
 The rest-server should be bound only to loopback and run with `--append-only`. This means the source host can create new backup data during the tunnel session but cannot use the REST endpoint to delete or modify existing repository data. Repository maintenance such as `forget` and `prune` should be run locally on the backup server with normal repository access.
 
+### Central configuration
+
+In remote mode, `/etc/backupdock/config.yaml` on the backup server is the single authoritative configuration. Backup settings and project-specific exclusions are generated from that controller configuration and sent to the source only for the current backup session.
+
+The source-side session file is created below:
+
+```text
+/run/backupdock/session-<random>/config.yaml
+```
+
+The runtime directory and session directory are mode `0700`; the temporary configuration is mode `0600`. It is removed when the source-side command exits, including error paths.
+
+`restic.repository`, `restic.password_file`, `remotes`, and controller-side retention access are not copied to the source configuration. The repository URL is generated from the temporary reverse tunnel. The Restic password is sent separately inside the SSH standard-input payload and is not written into the temporary YAML file.
+
+If `/etc/backupdock/config.yaml` nevertheless exists on a remote source host, BackupDock prints a warning such as:
+
+```text
+backupdock: warning: /etc/backupdock/config.yaml exists on the source host but is ignored for this remote backup; using the temporary controller-provided configuration
+```
+
+The file is **not loaded or merged**. This avoids having two competing configurations for the same remote backup.
+
 Example controller-side configuration on the backup server:
 
 ```yaml
+backup:
+  state_dir: "/var/lib/backupdock"
+  stop_timeout_seconds: 30
+  include_compose_metadata: true
+
+projects:
+  pve-backup-server-dockerfiles:
+    exclude_volumes:
+      - "pve-backup-server-dockerfiles_backups"
+
 remotes:
   docker-prod:
     ssh_target: "root@docker-prod.example"
@@ -274,6 +309,14 @@ remotes:
 ```
 
 `local_rest_server_host` and `local_rest_server_port` are resolved on the backup server. `remote_tunnel_port` is opened by SSH on `127.0.0.1` of the Docker source for the lifetime of that SSH session only. `repository_path` becomes the path below the rest-server data root.
+
+### Strict version check
+
+Before opening the reverse tunnel, reading the Restic password, or sending the generated source configuration, the controller runs the internal source command `backupdock source-info` over SSH.
+
+The source returns machine-readable version/protocol information. Remote backup proceeds only when the source BackupDock version is **exactly equal** to the controller version and the remote protocol version matches. Any mismatch aborts before containers, Restic, tunnel credentials, or source configuration are touched.
+
+The source also validates the controller version/protocol embedded in the actual backup-session payload, protecting against a source update between the initial check and the backup command.
 
 Start the remote backup from the backup server:
 
@@ -293,11 +336,11 @@ Dry-run is also available:
 backupdock remote-backup docker-prod --dry-run
 ```
 
-The controller does not put the Restic repository password into the SSH command line. It reads the configured password file on the backup server and sends the password to the source-side BackupDock process through SSH standard input. The source process uses it only for that process invocation. Any configured source-side `RESTIC_PASSWORD_FILE` or `RESTIC_PASSWORD_COMMAND` is ignored for this remote session.
+The controller does not put the Restic repository password into the SSH command line. It reads the configured password file on the backup server and sends the session payload through SSH standard input. The source process exposes the password to Restic only through its process environment. Any source-side `RESTIC_PASSWORD_FILE` or `RESTIC_PASSWORD_COMMAND` is ignored for this remote session.
 
-The source-side command is `backupdock source-backup`; it is normally invoked only by `remote-backup`. It overrides the Restic repository for that session with the tunnel URL, but then enters the same `_run_backup` path as a normal local backup. Discovery, dependency ordering, source validation, locking, Stop/Restic/Restart handling, manifests, and dry-run therefore remain shared rather than duplicated.
+The source-side command is `backupdock source-backup`; it is normally invoked only by `remote-backup`. It loads only the temporary controller-provided configuration and then enters the same `_run_backup` path as a normal local backup. Discovery, dependency ordering, source validation, locking, Stop/Restic/Restart handling, manifests, and dry-run therefore remain shared rather than duplicated.
 
-Automatic retention is intentionally disabled for `source-backup`, even if `retention.after_backup` is enabled in the source configuration. Destructive retention operations must not be sent through the append-only endpoint.
+Automatic retention is intentionally disabled for `source-backup`. Destructive retention operations must not be sent through the append-only endpoint.
 
 If the SSH session is interrupted, BackupDock handles `SIGHUP` in addition to `SIGINT` and `SIGTERM`, so an interrupted source-side run reaches the same guarded restart path for containers already stopped by BackupDock.
 
