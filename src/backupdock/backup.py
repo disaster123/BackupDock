@@ -131,7 +131,7 @@ class BackupOrchestrator:
         try:
             for container in running:
                 restart_candidates.append(container.id)
-                self.docker.stop(container.id, self.config.backup.stop_timeout_seconds)
+                self.docker.stop(container.id)
             self.restic.backup(paths, group.key)
         except BaseException as exc:
             primary_error = exc
