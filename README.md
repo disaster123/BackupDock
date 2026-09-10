@@ -32,7 +32,7 @@ backupdock backup
 
 ### 2. Remote/controller mode
 
-BackupDock is installed on both the backup server and the Docker source host. The backup server owns the single permanent configuration and initiates the backup over SSH. It creates a temporary reverse SSH tunnel so Restic on the Docker host can reach an authenticated, append-only rest-server on the otherwise unreachable backup server.
+BackupDock is installed on both the backup server and the Docker source host. The backup server owns the single permanent configuration and initiates the backup over SSH. It creates a temporary reverse SSH tunnel so Restic on the Docker host can reach an append-only rest-server on the otherwise unreachable backup server.
 
 ```text
 Backup server                         Docker source
@@ -40,8 +40,7 @@ Backup server                         Docker source
 /etc/backupdock/config.yaml           no permanent config required
 BackupDock controller ---- SSH -----> BackupDock
 rest-server <------ reverse tunnel -- Restic
-+ authentication                      Docker
-+ append-only
+                                      Docker
 ```
 
 The source receives only a temporary controller-generated configuration below `/run/backupdock/` for the current session. A permanent `/etc/backupdock/config.yaml` on a remote-only source is neither required nor used.
@@ -309,7 +308,7 @@ Loopback binding prevents network clients on other hosts from reaching the REST 
 
 ### Debian/Ubuntu controller setup
 
-On Debian 13 and Ubuntu releases that provide the `restic-rest-server` package, the packaged service can be used directly. It already provides the `restic-rest-server` system user, the `restic-rest-server.service` unit, and `/etc/default/restic-rest-server`; no separate service or custom systemd hardening is required for the BackupDock setup.
+On Debian 13 and Ubuntu releases that provide the `restic-rest-server` package, the packaged service can be used directly. It already provides the `restic-rest-server` system user, the `restic-rest-server.service` unit, `/etc/default/restic-rest-server`, and the default authentication file `/etc/restic-rest-server/users.htpasswd`; no separate service or custom systemd hardening is required for the BackupDock setup.
 
 Install rest-server and the `htpasswd` utility on the backup server:
 
@@ -339,15 +338,15 @@ PY
 chmod 0600 /etc/backupdock/secrets/docker-prod.rest-server-password
 ```
 
-Create the rest-server `.htpasswd` file using the same password. The clear-text password remains readable only by root on the controller; rest-server stores only its bcrypt hash:
+Add the rest-server user to Debian/Ubuntu's packaged authentication file using the same password. The clear-text password remains readable only by root on the controller; rest-server stores only its bcrypt hash:
 
 ```bash
-htpasswd -B -c -i \
-  /srv/backups/backupdock/.htpasswd \
+htpasswd -B -i \
+  /etc/restic-rest-server/users.htpasswd \
   docker-prod \
   < /etc/backupdock/secrets/docker-prod.rest-server-password
-chown restic-rest-server:restic-rest-server /srv/backups/backupdock/.htpasswd
-chmod 0600 /srv/backups/backupdock/.htpasswd
+chown root:restic-rest-server /etc/restic-rest-server/users.htpasswd
+chmod 0640 /etc/restic-rest-server/users.htpasswd
 ```
 
 Configure the packaged service:
@@ -359,12 +358,15 @@ vim /etc/default/restic-rest-server
 For BackupDock's reverse-tunnel mode, a minimal configuration is:
 
 ```ini
-LISTEN=127.0.0.1:8000
-BACKUP_DIR=/srv/backups/backupdock
-ARGS="--append-only"
+LISTEN = 127.0.0.1:8000
+BACKUP_DIR = /srv/backups/backupdock
+ARGS = "\
+  --htpasswd-file /etc/restic-rest-server/users.htpasswd \
+  --append-only \
+"
 ```
 
-Do **not** use `--no-auth` for this setup. With authentication enabled, rest-server uses `<BACKUP_DIR>/.htpasswd` by default and refuses to start if the password file cannot be opened.
+Do **not** use `--no-auth` for this setup. The packaged service explicitly uses `/etc/restic-rest-server/users.htpasswd`, which remains readable by the dedicated service user through its `restic-rest-server` group membership.
 
 The Debian/Ubuntu package runs rest-server as its dedicated `restic-rest-server` user. It does not need root privileges: rest-server stores Restic repository objects, while ownership and permission metadata for the original files is handled by Restic and restored by Restic on the source/restore host.
 
@@ -431,13 +433,11 @@ remotes:
       - "/root/.ssh/backupdock"
 ```
 
-`password_file` contains the Restic repository encryption password. `rest_server_username` and `rest_server_password_file` are separate credentials for access to the REST API. Restic receives the latter on the source only as `RESTIC_REST_USERNAME` and `RESTIC_REST_PASSWORD` for the lifetime of the remote backup process.
-
 `local_rest_server_host` and `local_rest_server_port` are resolved on the backup server. `remote_tunnel_port` is opened by SSH on `127.0.0.1` of the Docker source for the lifetime of that SSH session only. `repository_path` becomes the path below the rest-server data root.
 
 ### Strict version check
 
-Before opening the reverse tunnel, reading either password file, or sending the generated source configuration, the controller runs the internal source command `backupdock source-info` over SSH.
+Before opening the reverse tunnel, reading the Restic repository password or REST authentication password, or sending the generated source configuration, the controller runs the internal source command `backupdock source-info` over SSH.
 
 The source returns machine-readable version/protocol information. Remote backup proceeds only when the source BackupDock version is **exactly equal** to the controller version and the remote protocol version matches. Any mismatch aborts before containers, Restic, tunnel credentials, or source configuration are touched.
 
@@ -461,9 +461,7 @@ Dry-run is also available:
 backupdock remote-backup docker-prod --dry-run
 ```
 
-Dry-run performs the normal remote version check but does not read the real repository or REST authentication password files. Placeholder values are used inside the non-mutating source session.
-
-The controller does not put either password into the SSH command line or repository URL. Both are sent to the source-side BackupDock process through SSH standard input. The source process exposes the repository password to Restic as `RESTIC_PASSWORD` and REST authentication as `RESTIC_REST_USERNAME`/`RESTIC_REST_PASSWORD` only for the current process invocation. Source-side values for these variables, `RESTIC_PASSWORD_FILE`, or `RESTIC_PASSWORD_COMMAND` are ignored for the remote session and restored afterwards.
+The controller does not put the Restic repository password or REST authentication password into the SSH command line or repository URL. It reads both configured password files on the backup server and sends the session payload through SSH standard input. The source process exposes them to Restic only through `RESTIC_PASSWORD`, `RESTIC_REST_USERNAME`, and `RESTIC_REST_PASSWORD`. Any source-side values for those variables, `RESTIC_PASSWORD_FILE`, or `RESTIC_PASSWORD_COMMAND` are ignored for this remote session and restored afterward.
 
 The source-side command is `backupdock source-backup`; it is normally invoked only by `remote-backup`. It loads only the temporary controller-provided configuration and then enters the same `_run_backup` path as a normal local backup. Discovery, dependency ordering, source validation, locking, Stop/Restic/Restart handling, manifests, and dry-run therefore remain shared rather than duplicated.
 
