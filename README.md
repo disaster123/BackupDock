@@ -203,7 +203,7 @@ The installer deliberately does **not** create the real configuration. Create it
 
 ```bash
 sudo cp /etc/backupdock/config.yaml.example /etc/backupdock/config.yaml
-sudo editor /etc/backupdock/config.yaml
+sudo vim /etc/backupdock/config.yaml
 ```
 
 If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, normal local/controller commands write a warning to `stderr` and continue with built-in defaults where possible.
@@ -302,6 +302,56 @@ rest-server --append-only
 ```
 
 The rest-server should be bound only to loopback and run with `--append-only`. This means the source host can create new backup data during the tunnel session but cannot use the REST endpoint to delete or modify existing repository data. Repository maintenance such as `forget` and `prune` should be run locally on the backup server with normal repository access.
+
+### Debian/Ubuntu controller setup
+
+On Debian 13 and Ubuntu releases that provide the `restic-rest-server` package, the packaged service can be used directly. It already provides the `restic-rest-server` system user, the `restic-rest-server.service` unit, and `/etc/default/restic-rest-server`; no separate service or custom systemd hardening is required for the BackupDock setup.
+
+Install the server package on the backup server:
+
+```bash
+apt update
+apt install -y restic-rest-server
+```
+
+Create a repository root owned by the dedicated service user. The path below is only an example and can be changed:
+
+```bash
+install -d \
+  -o restic-rest-server \
+  -g restic-rest-server \
+  -m 0700 \
+  /srv/backups/backupdock
+```
+
+Configure the packaged service:
+
+```bash
+vim /etc/default/restic-rest-server
+```
+
+For BackupDock's reverse-tunnel mode, a minimal configuration is:
+
+```ini
+LISTEN=127.0.0.1:8000
+BACKUP_DIR=/srv/backups/backupdock
+ARGS="--append-only --no-auth"
+```
+
+`--no-auth` is appropriate for this layout because the REST endpoint is bound only to loopback and is reached from the Docker source exclusively through the temporary SSH reverse tunnel. Do not expose this unauthenticated listener on a non-loopback address.
+
+The Debian/Ubuntu package runs rest-server as its dedicated `restic-rest-server` user. It does not need root privileges: rest-server stores Restic repository objects, while ownership and permission metadata for the original files is handled by Restic and restored by Restic on the source/restore host.
+
+Start or restart the packaged service and verify the listener:
+
+```bash
+systemctl enable --now restic-rest-server
+systemctl restart restic-rest-server
+systemctl status restic-rest-server --no-pager
+ss -ltnp | grep ':8000'
+```
+
+The listener should be bound to `127.0.0.1:8000`, not `0.0.0.0:8000` or another externally reachable address.
 
 ### Central configuration
 
