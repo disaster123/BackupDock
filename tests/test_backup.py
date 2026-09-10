@@ -9,7 +9,11 @@ from backupdock.config import AppConfig, BackupConfig
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
 
 
-def make_container(name: str, running: bool) -> ContainerInfo:
+def make_container(
+    name: str,
+    running: bool,
+    dependencies: tuple[str, ...] = (),
+) -> ContainerInfo:
     return ContainerInfo(
         id=f"id-{name}",
         name=name,
@@ -20,6 +24,7 @@ def make_container(name: str, running: bool) -> ContainerInfo:
         compose_config_files=(),
         compose_environment_files=(),
         mounts=(),
+        compose_dependencies=dependencies,
     )
 
 
@@ -72,7 +77,11 @@ class BackupTests(unittest.TestCase):
             key="compose:app",
             name="app",
             compose_project="app",
-            containers=[make_container("db", True), make_container("disabled", False), make_container("web", True)],
+            containers=[
+                make_container("db", True),
+                make_container("disabled", False),
+                make_container("web", True, ("db",)),
+            ],
             sources=[BackupSource(source, "bind")],
         )
 
@@ -87,8 +96,8 @@ class BackupTests(unittest.TestCase):
 
             BackupOrchestrator(docker, restic, config).backup_group(self._group(source))
 
-            self.assertEqual(docker.stopped, ["id-db", "id-web"])
-            self.assertEqual(docker.started, ["id-web", "id-db"])
+            self.assertEqual(docker.stopped, ["id-web", "id-db"])
+            self.assertEqual(docker.started, ["id-db", "id-web"])
             self.assertEqual(len(restic.backups), 1)
 
     def test_containers_restart_when_restic_fails(self) -> None:
@@ -103,7 +112,7 @@ class BackupTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "backup failed"):
                 BackupOrchestrator(docker, restic, config).backup_group(self._group(source))
 
-            self.assertEqual(docker.started, ["id-web", "id-db"])
+            self.assertEqual(docker.started, ["id-db", "id-web"])
 
     def test_partial_stop_failure_restarts_only_containers_already_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -111,14 +120,14 @@ class BackupTests(unittest.TestCase):
             source = root / "data"
             source.mkdir()
             config = AppConfig(backup=BackupConfig(state_dir=root / "state"))
-            docker = FakeDocker(fail_stop="id-web")
+            docker = FakeDocker(fail_stop="id-db")
             restic = FakeRestic()
 
             with self.assertRaisesRegex(RuntimeError, "stop failed"):
                 BackupOrchestrator(docker, restic, config).backup_group(self._group(source))
 
-            self.assertEqual(docker.stopped, ["id-db"])
-            self.assertEqual(docker.started, ["id-db"])
+            self.assertEqual(docker.stopped, ["id-web"])
+            self.assertEqual(docker.started, ["id-web"])
             self.assertEqual(restic.backups, [])
 
     def test_manifest_is_part_of_backup(self) -> None:
