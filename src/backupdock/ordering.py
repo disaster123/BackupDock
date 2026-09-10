@@ -69,5 +69,5 @@ def running_containers_in_stop_order(containers: list[ContainerInfo]) -> list[Co
     return [
         container
         for container in reversed(containers_in_start_order(containers))
-        if container.running
+        if container.running and not container.ignored
     ]
