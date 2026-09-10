@@ -14,7 +14,12 @@ from backupdock.models import BackupGroup, BackupSource, ContainerInfo
 from backupdock.restic import ResticRunner
 
 
-def _container(name: str, *, running: bool = True) -> ContainerInfo:
+def _container(
+    name: str,
+    *,
+    running: bool = True,
+    dependencies: tuple[str, ...] = (),
+) -> ContainerInfo:
     return ContainerInfo(
         id=f"id-{name}",
         name=name,
@@ -25,6 +30,7 @@ def _container(name: str, *, running: bool = True) -> ContainerInfo:
         compose_config_files=(),
         compose_environment_files=(),
         mounts=(),
+        compose_dependencies=dependencies,
     )
 
 
@@ -65,7 +71,11 @@ class DryRunTests(unittest.TestCase):
                 key="compose:app",
                 name="app",
                 compose_project="app",
-                containers=[_container("db"), _container("disabled", running=False), _container("web")],
+                containers=[
+                    _container("db"),
+                    _container("disabled", running=False),
+                    _container("web", dependencies=("db",)),
+                ],
                 sources=[BackupSource(source, "bind")],
             )
             docker = RecordingDocker()
@@ -75,12 +85,12 @@ class DryRunTests(unittest.TestCase):
                 BackupOrchestrator(docker, restic, config, dry_run=True).run([group], [])
 
             self.assertEqual(restic.actions[0], ("preflight",))
-            self.assertEqual(docker.actions[0], ("stop", "id-db", 30))
-            self.assertEqual(docker.actions[1], ("stop", "id-web", 30))
+            self.assertEqual(docker.actions[0], ("stop", "id-web", 30))
+            self.assertEqual(docker.actions[1], ("stop", "id-db", 30))
             self.assertEqual(restic.actions[1][0], "backup")
             self.assertEqual(restic.actions[1][2], "compose:app")
-            self.assertEqual(docker.actions[2], ("ensure_running", "id-web"))
-            self.assertEqual(docker.actions[3], ("ensure_running", "id-db"))
+            self.assertEqual(docker.actions[2], ("ensure_running", "id-db"))
+            self.assertEqual(docker.actions[3], ("ensure_running", "id-web"))
             self.assertFalse((state_dir / "manifests" / "compose_app.json").exists())
 
     def test_restic_dry_run_prints_command_without_subprocess(self) -> None:
@@ -100,6 +110,7 @@ class DryRunTests(unittest.TestCase):
         backend = object.__new__(DockerBackend)
         backend.dry_run = True
         backend._client = MagicMock()
+        backend._containers_by_id = {}
         stdout = io.StringIO()
 
         with contextlib.redirect_stdout(stdout):
