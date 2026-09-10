@@ -7,7 +7,6 @@ BIN_LINK="/usr/bin/backupdock"
 CONFIG_DIR="/etc/backupdock"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 CONFIG_EXAMPLE_FILE="${CONFIG_DIR}/config.yaml.example"
-LEGACY_CONFIG_FILE="${CONFIG_DIR}/config.toml"
 STATE_DIR="/var/lib/backupdock"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -93,9 +92,6 @@ log "installed/updated example configuration at ${CONFIG_EXAMPLE_FILE}"
 
 if [[ ! -e "${CONFIG_FILE}" ]]; then
     warn "${CONFIG_FILE} does not exist; copy and edit ${CONFIG_EXAMPLE_FILE} before running backups"
-fi
-if [[ -e "${LEGACY_CONFIG_FILE}" ]]; then
-    warn "legacy ${LEGACY_CONFIG_FILE} found; BackupDock 0.2+ uses YAML"
 fi
 
 install -d -m 0700 "${STATE_DIR}"
