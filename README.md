@@ -15,6 +15,7 @@ BackupDock is intentionally not a daemon, scheduler, web UI, or replacement for 
 - Automatic bind-mount and Docker-volume discovery.
 - Docker Compose projects are consistency groups.
 - Only containers in the project currently being backed up are stopped.
+- Within a Compose project, running services are stopped in reverse dependency order and restarted in dependency order.
 - Containers that were already stopped stay stopped.
 - Running state is restored even when Restic or a stop operation fails.
 - Standalone containers are supported as one-container backup groups.
@@ -28,19 +29,23 @@ For containers created by Docker Compose, BackupDock uses Docker's Compose metad
 
 ```text
 Compose project A
-  stop containers that are currently running
+  stop currently-running containers in reverse dependency order
   back up A's bind mounts, volumes and Compose metadata
-  restart exactly the containers that were running
+  restart exactly the previously-running containers in dependency order
 
 Compose project B
-  stop containers that are currently running
+  stop currently-running containers in reverse dependency order
   back up B's data
-  restart exactly the containers that were running
+  restart exactly the previously-running containers in dependency order
 ```
 
 Other Compose projects remain online while a project is being backed up.
 
 A container without Compose metadata becomes its own standalone backup group.
+
+For Compose projects, BackupDock reconstructs service dependencies from the `com.docker.compose.depends_on` metadata written by Docker Compose. It also adds resolvable same-project runtime relationships from Docker inspect data for `links`, `volumes_from`, and container network sharing. Services without dependency relationships are ordered deterministically by name. A dependency cycle aborts discovery instead of guessing an unsafe order. Dependency targets that have no container in the currently deployed project are ignored for ordering with a warning.
+
+The dependency graph only changes ordering. A service that was stopped before the backup is never started merely because another service depends on it.
 
 If writable persistent paths overlap across two different groups, BackupDock aborts discovery. It will never decide on its own to stop an unrelated Compose project. Shared read-only bind mounts are allowed.
 
@@ -52,6 +57,7 @@ BackupDock reads the Docker daemon and discovers:
 - Docker volumes (`Type=volume`)
 - running/stopped container state
 - Docker Compose project and service names
+- Docker Compose service dependency metadata
 - Compose config-file metadata exposed by Docker Compose
 - the Compose working-directory `.env` file when present
 
@@ -225,7 +231,7 @@ backup:
 
 ## CLI
 
-Inspect the discovered groups, sources, and excluded Docker volumes:
+Inspect the discovered groups, sources, dependencies, and excluded Docker volumes:
 
 ```bash
 backupdock inventory
@@ -237,7 +243,7 @@ Run the normal backup workflow in dry-run mode:
 backupdock backup --dry-run
 ```
 
-Dry-run uses the same discovery, source validation, Restic preflight routine, group loop, stop/backup/restart transaction, host-path backup routine, and retention path as a real backup. The difference is at the execution boundary: mutating Docker actions, Restic commands, and manifest writes are printed instead of executed.
+Dry-run uses the same discovery, source validation, dependency ordering, Restic preflight routine, group loop, stop/backup/restart transaction, host-path backup routine, and retention path as a real backup. The difference is at the execution boundary: mutating Docker actions, Restic commands, and manifest writes are printed instead of executed.
 
 This makes dry-run useful for checking the actual command and action sequence without stopping containers or writing backup data.
 
@@ -295,14 +301,15 @@ Before any container is stopped, BackupDock:
 
 1. discovers every container and persistent mount,
 2. groups containers into Compose/standalone consistency groups,
-3. checks for unsafe writable storage overlap between groups,
-4. verifies the Restic repository is reachable.
+3. validates Compose dependency ordering,
+4. checks for unsafe writable storage overlap between groups,
+5. verifies the Restic repository is reachable.
 
-For each group it records which containers are running. The group is stopped and backed up inside a guarded transaction. Restart is attempted even after a backup failure, interruption, or partial stop failure.
+For each group it records which containers are running. Running containers are stopped in reverse dependency order and backed up inside a guarded transaction. Restart is attempted in dependency order even after a backup failure, interruption, or partial stop failure. Containers that were already stopped are never added to the restart set.
 
 Dry-run deliberately follows this same orchestration code path. `DockerBackend` and `ResticRunner` switch only their execution behavior: Docker mutations and Restic subprocess calls are rendered as `DRY-RUN ...` output. Manifest generation follows the same routine but prints the target manifest path instead of writing it. The normal process lock is still acquired so the plan is not produced concurrently with another BackupDock run.
 
-A manifest describing the group, containers, mount destinations, volume names, and host source paths is stored under BackupDock's state directory and included in the Restic snapshot during a real backup. This metadata is intended to support automated restore workflows later.
+A manifest describing the group, containers, dependency metadata, mount destinations, volume names, and host source paths is stored under BackupDock's state directory and included in the Restic snapshot during a real backup. This metadata is intended to support automated restore workflows later.
 
 ## Retention
 
