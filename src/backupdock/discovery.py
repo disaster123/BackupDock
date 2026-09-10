@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 from backupdock.config import AppConfig
@@ -93,10 +94,28 @@ def _order_group_containers(group: BackupGroup) -> None:
         raise DiscoveryError(f"Cannot determine safe container order for project {group.name}: {exc}") from exc
 
 
+def _source_from_mount(container: ContainerInfo, mount, *, required: bool) -> BackupSource:
+    return BackupSource(
+        path=Path(mount.source),
+        kind=mount.type,
+        container=container.name,
+        destination=mount.destination,
+        volume_name=mount.volume_name,
+        read_only=mount.read_only,
+        required=required,
+    )
+
+
 def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[BackupGroup]:
     grouped: dict[str, BackupGroup] = {}
+    ignored_names = set(config.backup.ignore_containers)
+    found_names = {container.name for container in containers}
 
-    for container in containers:
+    for ignored_name in sorted(ignored_names - found_names):
+        logger.warning("Configured ignored container was not found: %s", ignored_name)
+
+    for original in containers:
+        container = replace(original, ignored=original.name in ignored_names)
         key, name, compose_project = _group_key(container)
         grouped.setdefault(
             key,
@@ -114,6 +133,7 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
         excluded_volumes = global_volume_exclusions | project_volume_exclusions
         sources: list[BackupSource] = []
         excluded_sources: list[BackupSource] = []
+        ignored_sources: list[BackupSource] = []
 
         for container in group.containers:
             for mount in container.mounts:
@@ -123,38 +143,24 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                     continue
                 if not mount.source:
                     continue
-                if mount.type == "volume" and mount.volume_name in excluded_volumes:
-                    excluded_sources.append(
-                        BackupSource(
-                            path=Path(mount.source),
-                            kind=mount.type,
-                            container=container.name,
-                            destination=mount.destination,
-                            volume_name=mount.volume_name,
-                            read_only=mount.read_only,
-                            required=False,
-                        )
-                    )
-                    continue
 
                 source_path = Path(mount.source)
-                if _excluded(source_path, exclusions):
-                    continue
                 if mount.type == "bind" and _special_bind_source(source_path):
                     logger.warning("Ignoring non-file bind mount source: %s", source_path)
                     continue
 
-                sources.append(
-                    BackupSource(
-                        path=source_path,
-                        kind=mount.type,
-                        container=container.name,
-                        destination=mount.destination,
-                        volume_name=mount.volume_name,
-                        read_only=mount.read_only,
-                        required=True,
-                    )
-                )
+                if container.ignored:
+                    ignored_sources.append(_source_from_mount(container, mount, required=False))
+                    continue
+
+                if mount.type == "volume" and mount.volume_name in excluded_volumes:
+                    excluded_sources.append(_source_from_mount(container, mount, required=False))
+                    continue
+
+                if _excluded(source_path, exclusions):
+                    continue
+
+                sources.append(_source_from_mount(container, mount, required=True))
 
         if project_config:
             for extra_path in project_config.extra_paths:
@@ -176,9 +182,18 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
             unique_excluded.setdefault(key, source)
         group.excluded_sources = list(unique_excluded.values())
 
+        unique_ignored: dict[tuple[str, str, str | None], BackupSource] = {}
+        for source in ignored_sources:
+            key = (source.kind, str(normalized(source.path)), source.container)
+            unique_ignored.setdefault(key, source)
+        group.ignored_sources = list(unique_ignored.values())
+
         _order_group_containers(group)
         group.sources.sort(key=lambda source: (str(normalized(source.path)), source.kind))
         group.excluded_sources.sort(key=lambda source: (str(normalized(source.path)), source.kind))
+        group.ignored_sources.sort(
+            key=lambda source: (str(normalized(source.path)), source.container or "", source.kind)
+        )
 
     groups = sorted(grouped.values(), key=lambda group: group.key)
     validate_no_cross_group_storage(groups)
