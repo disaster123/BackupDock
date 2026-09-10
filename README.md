@@ -208,7 +208,7 @@ sudo vim /etc/backupdock/config.yaml
 
 If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, normal local/controller commands write a warning to `stderr` and continue with built-in defaults where possible.
 
-`backup.state_dir`, `backup.stop_timeout_seconds`, `backup.include_compose_metadata`, and `restic.backup_args` are shared defaults used by both local and remote backup runs. Source-specific paths, exclusions, and project rules are scoped to the source host:
+`backup.state_dir`, `backup.include_compose_metadata`, and `restic.backup_args` are shared defaults used by both local and remote backup runs. Source-specific paths, exclusions, and project rules are scoped to the source host:
 
 - Local mode uses top-level `backup.host_paths`, `backup.exclude_paths`, `backup.exclude_volumes`, and `projects`.
 - Remote mode uses `remotes.<name>.host_paths`, `remotes.<name>.exclude_paths`, `remotes.<name>.exclude_volumes`, and `remotes.<name>.projects`.
@@ -220,7 +220,6 @@ Minimal local example using Restic's standard environment variables:
 ```yaml
 backup:
   state_dir: "/var/lib/backupdock"
-  stop_timeout_seconds: 30
   include_compose_metadata: true
   host_paths: []
   exclude_paths: []
@@ -449,7 +448,6 @@ Example controller-side configuration on the backup server:
 ```yaml
 backup:
   state_dir: "/var/lib/backupdock"
-  stop_timeout_seconds: 30
   include_compose_metadata: true
 
 remotes:
@@ -612,7 +610,7 @@ Before any container is stopped, BackupDock:
 4. checks for unsafe writable storage overlap between groups,
 5. verifies the Restic repository is reachable.
 
-For each group it records which containers are running. Running containers are stopped in reverse dependency order and backed up inside a guarded transaction. Restart is attempted in dependency order even after a backup failure, interruption, or partial stop failure. Containers that were already stopped are never added to the restart set.
+For each group it records which containers are running. Running containers are stopped in reverse dependency order and backed up inside a guarded transaction. BackupDock does not override Docker's stop timing; the stop request is sent without a timeout argument so Docker applies the container's configured stop behavior. Restart is attempted in dependency order even after a backup failure, interruption, or partial stop failure. Containers that were already stopped are never added to the restart set.
 
 Dry-run deliberately follows this same orchestration code path. `DockerBackend` and `ResticRunner` switch only their execution behavior: Docker mutations and Restic subprocess calls are rendered as `DRY-RUN ...` output. Manifest generation follows the same routine but prints the target manifest path instead of writing it. The normal process lock is still acquired so the plan is not produced concurrently with another BackupDock run.
 
