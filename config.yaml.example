@@ -28,7 +28,6 @@ restic:
 backup:
   # Shared BackupDock behavior for local and remote source hosts.
   state_dir: "/var/lib/backupdock"
-  stop_timeout_seconds: 30
   include_compose_metadata: true
 
   # Local-mode source settings. Remote hosts use the corresponding fields below
