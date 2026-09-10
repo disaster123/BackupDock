@@ -24,6 +24,7 @@ class ContainerInfo:
     compose_config_files: tuple[str, ...]
     compose_environment_files: tuple[str, ...]
     mounts: tuple[MountInfo, ...]
+    compose_dependencies: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
