@@ -21,6 +21,8 @@ class SourceRemoteTests(unittest.TestCase):
             ssh_target="root@source",
             password_file=Path("/tmp/test-password"),
             repository_path="source",
+            rest_server_username="source",
+            rest_server_password_file=Path("/tmp/test-rest-password"),
         )
         config = AppConfig(remotes={"source": remote})
 
@@ -51,7 +53,7 @@ class SourceRemoteTests(unittest.TestCase):
         self.assertEqual(payload["version"], __version__)
         self.assertEqual(payload["protocol"], REMOTE_PROTOCOL_VERSION)
 
-    def test_source_backup_uses_temporary_controller_config_and_warns_about_local_config(self) -> None:
+    def test_source_backup_uses_temporary_controller_config_and_session_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runtime_dir = root / "run"
@@ -75,7 +77,9 @@ retention:
                 {
                     "version": __version__,
                     "protocol": REMOTE_PROTOCOL_VERSION,
-                    "password": "session-value",
+                    "repository_password": "repository-session-value",
+                    "rest_server_username": "source",
+                    "rest_server_password": "rest-session-value",
                     "config_yaml": source_yaml,
                 }
             )
@@ -89,14 +93,22 @@ retention:
                 observed["password"] = os.environ.get("RESTIC_PASSWORD")
                 observed["password_file"] = os.environ.get("RESTIC_PASSWORD_FILE")
                 observed["password_command"] = os.environ.get("RESTIC_PASSWORD_COMMAND")
+                observed["rest_username"] = os.environ.get("RESTIC_REST_USERNAME")
+                observed["rest_password"] = os.environ.get("RESTIC_REST_PASSWORD")
 
-            previous = {
-                key: os.environ.get(key)
-                for key in ("RESTIC_PASSWORD", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND")
-            }
+            secret_keys = (
+                "RESTIC_PASSWORD",
+                "RESTIC_PASSWORD_FILE",
+                "RESTIC_PASSWORD_COMMAND",
+                "RESTIC_REST_USERNAME",
+                "RESTIC_REST_PASSWORD",
+            )
+            previous = {key: os.environ.get(key) for key in secret_keys}
             os.environ["RESTIC_PASSWORD"] = "previous-value"
             os.environ["RESTIC_PASSWORD_FILE"] = "/tmp/previous-file"
             os.environ["RESTIC_PASSWORD_COMMAND"] = "previous-command"
+            os.environ["RESTIC_REST_USERNAME"] = "previous-user"
+            os.environ["RESTIC_REST_PASSWORD"] = "previous-rest-password"
             try:
                 with (
                     patch("backupdock.cli.SOURCE_RUNTIME_DIR", runtime_dir),
@@ -119,9 +131,11 @@ retention:
             self.assertEqual(source_config.projects["pbs"].exclude_volumes, ("pbs-backups",))
             self.assertFalse(source_config.retention.after_backup)
             self.assertFalse(source_config.retention.prune)
-            self.assertEqual(observed["password"], "session-value")
+            self.assertEqual(observed["password"], "repository-session-value")
             self.assertIsNone(observed["password_file"])
             self.assertIsNone(observed["password_command"])
+            self.assertEqual(observed["rest_username"], "source")
+            self.assertEqual(observed["rest_password"], "rest-session-value")
             self.assertEqual(observed["projects"], ["nextcloud"])
             self.assertFalse(observed["dry_run"])
             self.assertIn("ignored", stderr.getvalue())
@@ -136,7 +150,9 @@ retention:
             {
                 "version": "0.0.0",
                 "protocol": REMOTE_PROTOCOL_VERSION,
-                "password": "session-value",
+                "repository_password": "repository-session-value",
+                "rest_server_username": "source",
+                "rest_server_password": "rest-session-value",
                 "config_yaml": "backup: {}\n",
             }
         )
@@ -149,6 +165,22 @@ retention:
                 _run_source_backup([], dry_run=False)
 
         run_backup.assert_not_called()
+
+    def test_source_backup_rejects_missing_rest_server_credentials(self) -> None:
+        payload = json.dumps(
+            {
+                "version": __version__,
+                "protocol": REMOTE_PROTOCOL_VERSION,
+                "repository_password": "repository-session-value",
+                "rest_server_username": "source",
+                "rest_server_password": "",
+                "config_yaml": "backup: {}\n",
+            }
+        )
+
+        with patch("sys.stdin", io.StringIO(payload)):
+            with self.assertRaisesRegex(ValueError, "rest-server password"):
+                _run_source_backup([], dry_run=False)
 
 
 if __name__ == "__main__":
