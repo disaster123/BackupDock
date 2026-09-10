@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -63,6 +64,9 @@ class ResticRunner:
             env["RESTIC_PASSWORD_FILE"] = str(self.config.password_file)
         env.update(self.env_overrides)
         return env
+
+    def _effective_host(self) -> str:
+        return self.config.host or self._env().get("RESTIC_HOST") or socket.gethostname()
 
     def _base(self) -> list[str]:
         return [self.config.binary]
@@ -235,8 +239,34 @@ class ResticRunner:
             phase = "preseed" if preseed else "backup"
             print(f"[{group_key}] {phase} complete", flush=True)
 
-    def preflight(self) -> None:
-        self._run(["snapshots", "--json"], capture=True)
+    def preflight(self) -> set[str] | None:
+        result = self._run(["snapshots", "--json"], capture=True)
+        if self.dry_run:
+            return None
+
+        try:
+            snapshots = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise ResticError("Restic snapshots returned invalid JSON") from exc
+        if not isinstance(snapshots, list):
+            raise ResticError("Restic snapshots returned an unexpected JSON structure")
+
+        current_host = self._effective_host()
+        consistent_groups: set[str] = set()
+        for snapshot in snapshots:
+            if not isinstance(snapshot, dict) or snapshot.get("hostname") != current_host:
+                continue
+            tags_raw = snapshot.get("tags")
+            if not isinstance(tags_raw, list):
+                continue
+            tags = {tag for tag in tags_raw if isinstance(tag, str)}
+            if "backupdock" not in tags or "backupdock-preseed" in tags:
+                continue
+            for tag in tags:
+                prefix = "backupdock-group="
+                if tag.startswith(prefix) and tag[len(prefix):]:
+                    consistent_groups.add(tag[len(prefix):])
+        return consistent_groups
 
     def init(self) -> None:
         self._run(["init"])
