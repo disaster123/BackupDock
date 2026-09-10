@@ -57,14 +57,14 @@ def _minimal_backup_paths(sources: list[BackupSource]) -> list[Path]:
 
 
 class BackupOrchestrator:
-    def __init__(self, docker_backend, restic_runner, config: AppConfig) -> None:
+    def __init__(self, docker_backend, restic_runner, config: AppConfig, *, dry_run: bool = False) -> None:
         self.docker = docker_backend
         self.restic = restic_runner
         self.config = config
+        self.dry_run = dry_run
 
     def _write_manifest(self, group: BackupGroup) -> Path:
         manifest_dir = self.config.backup.state_dir / "manifests"
-        manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / f"{_slug(group.key)}.json"
         payload = {
             "schema": 1,
@@ -82,6 +82,12 @@ class BackupOrchestrator:
                 for source in group.sources
             ],
         }
+
+        if self.dry_run:
+            print(f"DRY-RUN write manifest {manifest_path}")
+            return manifest_path
+
+        manifest_dir.mkdir(parents=True, exist_ok=True)
         temporary = manifest_path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, manifest_path)
@@ -100,6 +106,13 @@ class BackupOrchestrator:
         available_sources = [source for source in group.sources if _usable_source(source)]
         manifest_path = self._write_manifest(group)
         paths = _minimal_backup_paths(available_sources + [BackupSource(manifest_path, "manifest")])
+
+        if self.dry_run:
+            print(f"DRY-RUN backup group {group.key}")
+            for source in group.excluded_sources:
+                detail = f" volume={source.volume_name}" if source.volume_name else ""
+                destination = f" -> {source.destination}" if source.destination else ""
+                print(f"DRY-RUN excluded {source.kind} {source.path}{detail}{destination}")
 
         has_persistent_data = any(source.persistent for source in available_sources)
         running = group.running_containers if has_persistent_data else []
