@@ -190,35 +190,54 @@ class RemoteBackupTests(unittest.TestCase):
 
         run.assert_called_once()
 
-    def test_payload_contains_both_credentials_but_not_in_source_yaml(self) -> None:
+    def test_payload_uses_only_selected_remote_source_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             password_file = root / "password"
             rest_password_file = root / "rest-password"
             password_file.write_text("repository-value\n", encoding="utf-8")
             rest_password_file.write_text("rest-value\n", encoding="utf-8")
-            remote = self._remote(password_file, rest_password_file)
-            app_config = AppConfig(
-                backup=BackupConfig(exclude_volumes=("global-cache",)),
+            remote = RemoteConfig(
+                ssh_target="root@docker-host",
+                password_file=password_file,
+                repository_path="docker-host",
+                rest_server_username="docker-host",
+                rest_server_password_file=rest_password_file,
+                host_paths=(Path("/remote/static"),),
+                exclude_volumes=("remote-cache",),
                 projects={
-                    "pbs": ProjectConfig(exclude_volumes=("pbs-backups",)),
+                    "pbs": ProjectConfig(exclude_volumes=("remote-pbs-backups",)),
+                },
+            )
+            app_config = AppConfig(
+                backup=BackupConfig(
+                    host_paths=(Path("/local/static"),),
+                    exclude_volumes=("local-cache",),
+                ),
+                projects={
+                    "pbs": ProjectConfig(exclude_volumes=("local-pbs-backups",)),
                 },
                 remotes={"docker-host": remote},
             )
             controller = RemoteBackupController(app_config, remote)
             payload = json.loads(controller._payload(dry_run=False))
+            source_yaml = payload["config_yaml"]
 
             self.assertEqual(payload["version"], __version__)
             self.assertEqual(payload["protocol"], REMOTE_PROTOCOL_VERSION)
             self.assertEqual(payload["repository_password"], "repository-value")
             self.assertEqual(payload["rest_server_username"], "docker-host")
             self.assertEqual(payload["rest_server_password"], "rest-value")
-            self.assertIn("pbs-backups", payload["config_yaml"])
-            self.assertIn("global-cache", payload["config_yaml"])
-            self.assertNotIn("remotes:", payload["config_yaml"])
-            self.assertNotIn(str(password_file), payload["config_yaml"])
-            self.assertNotIn(str(rest_password_file), payload["config_yaml"])
-            self.assertNotIn("rest-value", payload["config_yaml"])
+            self.assertIn("/remote/static", source_yaml)
+            self.assertIn("remote-cache", source_yaml)
+            self.assertIn("remote-pbs-backups", source_yaml)
+            self.assertNotIn("/local/static", source_yaml)
+            self.assertNotIn("local-cache", source_yaml)
+            self.assertNotIn("local-pbs-backups", source_yaml)
+            self.assertNotIn("remotes:", source_yaml)
+            self.assertNotIn(str(password_file), source_yaml)
+            self.assertNotIn(str(rest_password_file), source_yaml)
+            self.assertNotIn("rest-value", source_yaml)
 
     def test_secrets_are_sent_in_payload_and_not_in_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
