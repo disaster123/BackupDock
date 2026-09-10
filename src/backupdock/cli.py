@@ -160,7 +160,7 @@ def _run_backup(config: AppConfig, projects: list[str], *, dry_run: bool) -> Non
         docker.close()
 
 
-def _read_source_payload() -> tuple[str, str]:
+def _read_source_payload() -> tuple[str, str, str, str]:
     if sys.stdin.isatty():
         raise ValueError("source-backup requires a controller payload on standard input")
     try:
@@ -181,13 +181,19 @@ def _read_source_payload() -> tuple[str, str]:
             f"controller={payload.get('protocol')!r}, source={REMOTE_PROTOCOL_VERSION}"
         )
 
-    password = payload.get("password")
+    repository_password = payload.get("repository_password")
+    rest_server_username = payload.get("rest_server_username")
+    rest_server_password = payload.get("rest_server_password")
     config_yaml = payload.get("config_yaml")
-    if not isinstance(password, str) or not password:
-        raise ValueError("source-backup received an empty Restic password")
+    if not isinstance(repository_password, str) or not repository_password:
+        raise ValueError("source-backup received an empty Restic repository password")
+    if not isinstance(rest_server_username, str) or not rest_server_username:
+        raise ValueError("source-backup received an empty rest-server username")
+    if not isinstance(rest_server_password, str) or not rest_server_password:
+        raise ValueError("source-backup received an empty rest-server password")
     if not isinstance(config_yaml, str) or not config_yaml.strip():
         raise ValueError("source-backup received an empty source configuration")
-    return password, config_yaml
+    return repository_password, rest_server_username, rest_server_password, config_yaml
 
 
 def _write_source_session_config(config_yaml: str) -> tuple[Path, Path]:
@@ -202,7 +208,9 @@ def _write_source_session_config(config_yaml: str) -> tuple[Path, Path]:
 
 
 def _run_source_backup(projects: list[str], *, dry_run: bool) -> None:
-    password, config_yaml = _read_source_payload()
+    repository_password, rest_server_username, rest_server_password, config_yaml = (
+        _read_source_payload()
+    )
 
     if DEFAULT_CONFIG_PATH.exists():
         print(
@@ -212,13 +220,21 @@ def _run_source_backup(projects: list[str], *, dry_run: bool) -> None:
         )
 
     session_dir, config_path = _write_source_session_config(config_yaml)
-    secret_keys = ("RESTIC_PASSWORD", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND")
+    secret_keys = (
+        "RESTIC_PASSWORD",
+        "RESTIC_PASSWORD_FILE",
+        "RESTIC_PASSWORD_COMMAND",
+        "RESTIC_REST_USERNAME",
+        "RESTIC_REST_PASSWORD",
+    )
     previous = {key: os.environ.get(key) for key in secret_keys}
     try:
         source_config = load_config(config_path, use_environment=False)
-        os.environ["RESTIC_PASSWORD"] = password
+        os.environ["RESTIC_PASSWORD"] = repository_password
         os.environ.pop("RESTIC_PASSWORD_FILE", None)
         os.environ.pop("RESTIC_PASSWORD_COMMAND", None)
+        os.environ["RESTIC_REST_USERNAME"] = rest_server_username
+        os.environ["RESTIC_REST_PASSWORD"] = rest_server_password
         _run_backup(source_config, projects, dry_run=dry_run)
     finally:
         for key, value in previous.items():
