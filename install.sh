@@ -102,5 +102,7 @@ fi
 
 log "installed $("${BIN_LINK}" --version)"
 log "command: ${BIN_LINK}"
-log "configuration example: ${CONFIG_EXAMPLE_FILE}"
-log "configuration: ${CONFIG_FILE}"
+log "example configuration: ${CONFIG_EXAMPLE_FILE}"
+if [[ -e "${CONFIG_FILE}" ]]; then
+    log "active configuration: ${CONFIG_FILE}"
+fi
