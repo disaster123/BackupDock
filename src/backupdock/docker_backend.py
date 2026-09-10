@@ -105,6 +105,7 @@ def merge_runtime_dependencies(
 def parse_container_attrs(attrs: dict) -> ContainerInfo:
     labels = (attrs.get("Config") or {}).get("Labels") or {}
     state = attrs.get("State") or {}
+    host_config = attrs.get("HostConfig") or {}
     mounts: list[MountInfo] = []
 
     for mount in attrs.get("Mounts") or []:
@@ -137,6 +138,7 @@ def parse_container_attrs(attrs: dict) -> ContainerInfo:
         compose_environment_files=_split_label_paths(labels.get(COMPOSE_ENVIRONMENT_FILE)),
         mounts=tuple(mounts),
         compose_dependencies=_parse_compose_dependencies(labels.get(COMPOSE_DEPENDENCIES)),
+        auto_remove=bool(host_config.get("AutoRemove", False)),
     )
 
 
