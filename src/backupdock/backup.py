@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from backupdock.config import AppConfig
+from backupdock.discovery import paths_overlap
 from backupdock.models import BackupGroup, BackupSource
 from backupdock.ordering import DependencyOrderError, running_containers_in_stop_order
 
@@ -62,11 +63,20 @@ def _minimal_backup_paths(sources: list[BackupSource]) -> list[Path]:
 
 
 class BackupOrchestrator:
-    def __init__(self, docker_backend, restic_runner, config: AppConfig, *, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        docker_backend,
+        restic_runner,
+        config: AppConfig,
+        *,
+        dry_run: bool = False,
+        preseed: bool = False,
+    ) -> None:
         self.docker = docker_backend
         self.restic = restic_runner
         self.config = config
         self.dry_run = dry_run
+        self.preseed = preseed
 
     def _write_manifest(self, group: BackupGroup) -> Path:
         manifest_dir = self.config.backup.state_dir / "manifests"
@@ -107,6 +117,75 @@ class BackupOrchestrator:
                 errors.append(f"{container_id[:12]}: {exc}")
         return errors
 
+    def _validate_safety(
+        self,
+        selected_groups: list[BackupGroup],
+        host_sources: list[BackupSource],
+        observed_groups: list[BackupGroup],
+    ) -> None:
+        auto_remove: list[tuple[str, str]] = []
+        for group in selected_groups:
+            if not any(source.persistent for source in group.sources):
+                continue
+            for container in group.containers:
+                if container.running and not container.ignored and container.auto_remove:
+                    auto_remove.append((group.name, container.name))
+
+        if auto_remove:
+            lines = [
+                "Cannot safely stop running auto-remove containers (--rm/AutoRemove=true):"
+            ]
+            for group_name, container_name in sorted(auto_remove):
+                lines.append(f"  project={group_name} container={container_name}")
+            lines.append(
+                "Stopping these containers would remove them and may remove anonymous volumes. "
+                "Configure the exact container name in backup.ignore_containers only when it is safe to leave it running."
+            )
+            raise BackupError("\n".join(lines))
+
+        backed_sources = [
+            (group.name, source)
+            for group in selected_groups
+            for source in group.sources
+            if source.persistent
+        ]
+        backed_sources.extend(("host", source) for source in host_sources)
+
+        conflicts: set[tuple[str, str, str, str]] = set()
+        for group in observed_groups:
+            running_ignored = {
+                container.name
+                for container in group.containers
+                if container.running and container.ignored
+            }
+            for ignored_source in group.ignored_sources:
+                if ignored_source.container not in running_ignored or ignored_source.read_only:
+                    continue
+                for backed_group, backed_source in backed_sources:
+                    if paths_overlap(ignored_source.path, backed_source.path):
+                        conflicts.add(
+                            (
+                                ignored_source.container or "unknown",
+                                str(ignored_source.path),
+                                backed_group,
+                                str(backed_source.path),
+                            )
+                        )
+
+        if conflicts:
+            lines = [
+                "Ignored running containers have writable storage overlapping selected backup data:"
+            ]
+            for container_name, ignored_path, group_name, backup_path in sorted(conflicts):
+                lines.append(
+                    f"  container={container_name} path={ignored_path} <-> "
+                    f"backup={group_name} path={backup_path}"
+                )
+            lines.append(
+                "BackupDock will not create a supposedly consistent snapshot while an ignored container can modify the data."
+            )
+            raise BackupError("\n".join(lines))
+
     def backup_group(self, group: BackupGroup) -> None:
         available_sources = [source for source in group.sources if _usable_source(source)]
         manifest_path = self._write_manifest(group)
@@ -118,12 +197,22 @@ class BackupOrchestrator:
                 detail = f" volume={source.volume_name}" if source.volume_name else ""
                 destination = f" -> {source.destination}" if source.destination else ""
                 print(f"DRY-RUN excluded {source.kind} {source.path}{detail}{destination}")
+            for container in group.containers:
+                if container.ignored:
+                    print(f"DRY-RUN ignored container {container.name}")
 
         has_persistent_data = any(source.persistent for source in available_sources)
         try:
             running = running_containers_in_stop_order(group.containers) if has_persistent_data else []
         except DependencyOrderError as exc:
             raise BackupError(f"Cannot determine safe container order for project {group.name}: {exc}") from exc
+
+        if self.preseed and running:
+            if self.dry_run:
+                print(f"DRY-RUN preseed backup group {group.key} while containers remain running")
+            else:
+                logger.info("Preseeding backup group %s while containers remain running", group.key)
+            self.restic.backup(paths, group.key, preseed=True)
 
         restart_candidates: list[str] = []
         primary_error: BaseException | None = None
@@ -152,7 +241,14 @@ class BackupOrchestrator:
             return
         self.restic.backup(_minimal_backup_paths(available), "host")
 
-    def run(self, groups: list[BackupGroup], host_sources: list[BackupSource]) -> None:
+    def run(
+        self,
+        groups: list[BackupGroup],
+        host_sources: list[BackupSource],
+        *,
+        observed_groups: list[BackupGroup] | None = None,
+    ) -> None:
+        self._validate_safety(groups, host_sources, observed_groups or groups)
         self.restic.preflight()
         for group in groups:
             self.backup_group(group)
