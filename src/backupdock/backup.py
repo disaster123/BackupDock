@@ -9,6 +9,7 @@ from pathlib import Path
 
 from backupdock.config import AppConfig
 from backupdock.models import BackupGroup, BackupSource
+from backupdock.ordering import DependencyOrderError, running_containers_in_stop_order
 
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,11 @@ class BackupOrchestrator:
                 print(f"DRY-RUN excluded {source.kind} {source.path}{detail}{destination}")
 
         has_persistent_data = any(source.persistent for source in available_sources)
-        running = group.running_containers if has_persistent_data else []
+        try:
+            running = running_containers_in_stop_order(group.containers) if has_persistent_data else []
+        except DependencyOrderError as exc:
+            raise BackupError(f"Cannot determine safe container order for project {group.name}: {exc}") from exc
+
         restart_candidates: list[str] = []
         primary_error: BaseException | None = None
 
