@@ -3,7 +3,8 @@
 #
 # Local mode:
 #   This file lives on the Docker host and is used by `backupdock backup`.
-#   Top-level backup.host_paths/exclude_* and projects apply to this local host.
+#   Top-level backup.host_paths/exclude_*/ignore_containers and projects apply
+#   to this local host.
 #
 # Remote mode:
 #   This file lives only on the backup/controller server. BackupDock generates
@@ -36,6 +37,11 @@ backup:
   exclude_paths: []
   exclude_volumes: []
 
+  # Exact Docker container names that BackupDock must never stop or back up.
+  # Use only for explicitly accepted exceptions such as safe one-shot --rm
+  # containers. Writable overlap with selected backup data still aborts.
+  ignore_containers: []
+
 # Local-mode project-specific source settings. These apply only when running
 # `backupdock backup` on this host. Remote hosts have their own projects mapping
 # below remotes.<name>.projects.
@@ -48,8 +54,9 @@ projects: {}
 #       - "my-compose-project_large-backups"
 
 # Optional controller-side configuration. Each remote contains its own
-# source-specific host paths, exclusions, and project rules. This allows one
-# controller to manage multiple Docker source hosts without mixing their rules.
+# source-specific host paths, exclusions, ignored containers, and project rules.
+# This allows one controller to manage multiple Docker source hosts without
+# mixing their rules.
 remotes: {}
 # remotes:
 #   docker-prod:
@@ -66,6 +73,7 @@ remotes: {}
 #     host_paths: []
 #     exclude_paths: []
 #     exclude_volumes: []
+#     ignore_containers: []
 #     projects:
 #       my-compose-project:
 #         extra_paths: []
