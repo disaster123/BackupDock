@@ -66,6 +66,8 @@ class RemoteConfig:
     ssh_target: str
     password_file: Path
     repository_path: str
+    rest_server_username: str
+    rest_server_password_file: Path
     ssh_binary: str = "ssh"
     source_command: tuple[str, ...] = ("backupdock",)
     ssh_options: tuple[str, ...] = ()
@@ -205,6 +207,11 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
         password_file = _optional_path(remote_data.get("password_file"))
         if password_file is None:
             raise ValueError(f"remotes.{remote_name}.password_file must be configured")
+        rest_server_password_file = _optional_path(remote_data.get("rest_server_password_file"))
+        if rest_server_password_file is None:
+            raise ValueError(
+                f"remotes.{remote_name}.rest_server_password_file must be configured"
+            )
         source_command_raw = remote_data.get("source_command", ["backupdock"])
         source_command = _strings(source_command_raw, field_name=f"remotes.{remote_name}.source_command")
         if not source_command:
@@ -219,6 +226,11 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
                 remote_data.get("repository_path"),
                 field_name=f"remotes.{remote_name}.repository_path",
             ),
+            rest_server_username=_required_string(
+                remote_data.get("rest_server_username"),
+                field_name=f"remotes.{remote_name}.rest_server_username",
+            ),
+            rest_server_password_file=rest_server_password_file,
             ssh_binary=_required_string(
                 remote_data.get("ssh_binary", "ssh"),
                 field_name=f"remotes.{remote_name}.ssh_binary",
