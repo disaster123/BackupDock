@@ -150,6 +150,7 @@ class RemoteBackupController:
         )
         source_yaml = render_source_config(
             self.app_config,
+            self.config,
             repository=repository_url(self.config),
         )
         return json.dumps(
