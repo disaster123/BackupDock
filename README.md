@@ -225,10 +225,26 @@ backup:
 
 ## CLI
 
-Inspect what BackupDock would protect before running the first backup:
+Inspect the discovered groups, sources, and excluded Docker volumes:
 
 ```bash
 backupdock inventory
+```
+
+Run the normal backup workflow in dry-run mode:
+
+```bash
+backupdock backup --dry-run
+```
+
+Dry-run uses the same discovery, source validation, Restic preflight routine, group loop, stop/backup/restart transaction, host-path backup routine, and retention path as a real backup. The difference is at the execution boundary: mutating Docker actions, Restic commands, and manifest writes are printed instead of executed.
+
+This makes dry-run useful for checking the actual command and action sequence without stopping containers or writing backup data.
+
+Preview only one Compose project:
+
+```bash
+backupdock backup --project paperless --dry-run
 ```
 
 Back up all groups sequentially:
@@ -284,7 +300,9 @@ Before any container is stopped, BackupDock:
 
 For each group it records which containers are running. The group is stopped and backed up inside a guarded transaction. Restart is attempted even after a backup failure, interruption, or partial stop failure.
 
-A manifest describing the group, containers, mount destinations, volume names, and host source paths is stored under BackupDock's state directory and included in the Restic snapshot. This metadata is intended to support automated restore workflows later.
+Dry-run deliberately follows this same orchestration code path. `DockerBackend` and `ResticRunner` switch only their execution behavior: Docker mutations and Restic subprocess calls are rendered as `DRY-RUN ...` output. Manifest generation follows the same routine but prints the target manifest path instead of writing it. The normal process lock is still acquired so the plan is not produced concurrently with another BackupDock run.
+
+A manifest describing the group, containers, mount destinations, volume names, and host source paths is stored under BackupDock's state directory and included in the Restic snapshot during a real backup. This metadata is intended to support automated restore workflows later.
 
 ## Retention
 
