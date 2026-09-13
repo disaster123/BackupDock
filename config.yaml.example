@@ -22,6 +22,13 @@ restic:
   # repository: "sftp:backup@example:/backups/docker-host"
   # password_file: "/root/.config/restic/password"
 
+  # Controller-local snapshots/check/forget auto-select the only remote when
+  # repository is unset. Its local path is BACKUP_DIR + repository_path and its
+  # password_file comes from that remote. For multiple remotes use --remote NAME.
+  # BACKUP_DIR is read as data from the packaged rest-server configuration below.
+  # Set this only if the service uses a different configuration file:
+  # rest_server_config_file: "/etc/default/restic-rest-server"
+
   # Optional arguments passed only to `restic backup`. These are shared defaults
   # for local and remote backup runs.
   backup_args: []
@@ -99,7 +106,8 @@ remotes: {}
 # `backupdock forget` applies keep_* to normal snapshots, then removes preseeds
 # replaced by a remaining normal snapshot of the same host, group and paths.
 # Unreplaced preseeds are kept. `prune: true` or `forget --prune` reclaims unused
-# data once after both steps. Maintenance uses the top-level restic settings.
+# data once after both steps. Maintenance uses an explicit top-level repository
+# or auto-resolves the selected remote using the rest-server configuration.
 retention:
   after_backup: false
   prune: false

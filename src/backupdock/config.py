@@ -19,6 +19,7 @@ class ResticConfig:
     password_file: Path | None = None
     backup_args: tuple[str, ...] = ()
     host: str | None = None
+    rest_server_config_file: Path = Path("/etc/default/restic-rest-server")
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +305,7 @@ def load_config(path: Path | None = None, *, use_environment: bool = True) -> Ap
             password_file=_optional_path(password_file_raw),
             backup_args=backup_args,
             host=host,
+            rest_server_config_file=_optional_path(restic_data.get("rest_server_config_file")) or Path("/etc/default/restic-rest-server"),
         ),
         backup=BackupConfig(
             state_dir=Path(state_dir_raw).expanduser(),

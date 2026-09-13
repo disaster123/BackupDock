@@ -16,6 +16,7 @@ from backupdock.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from backupdock.discovery import DiscoveryError, discover_groups, host_sources
 from backupdock.docker_backend import DockerBackend
 from backupdock.locking import LockError, ProcessLock
+from backupdock.maintenance import maintenance_config
 from backupdock.models import BackupSource
 from backupdock.remote import REMOTE_PROTOCOL_VERSION, RemoteBackupController, RemoteBackupError
 from backupdock.restic import ResticError, ResticRunner
@@ -76,11 +77,14 @@ def _parser() -> argparse.ArgumentParser:
         "--remote",
         help="Initialize the repository configured for this remote on the controller",
     )
-    subparsers.add_parser("snapshots", help="List BackupDock Restic snapshots")
-    subparsers.add_parser("check", help="Run restic check")
+    snapshots_parser = subparsers.add_parser("snapshots", help="List BackupDock Restic snapshots")
+    snapshots_parser.add_argument("--remote", help="Select a remote repository for controller-local access")
+    check_parser = subparsers.add_parser("check", help="Run restic check")
+    check_parser.add_argument("--remote", help="Select a remote repository for controller-local access")
 
     forget_parser = subparsers.add_parser("forget", help="Apply the configured retention policy")
     forget_parser.add_argument("--prune", action="store_true", help="Prune unreferenced data after forgetting snapshots")
+    forget_parser.add_argument("--remote", help="Select a remote repository for controller-local maintenance")
     return parser
 
 
@@ -351,7 +355,10 @@ def main(argv: list[str] | None = None) -> int:
             RemoteBackupController(config, remote_config).init_repository()
             return 0
 
-        restic = ResticRunner(config.restic)
+        restic_config = config.restic
+        if args.command in ("snapshots", "check", "forget"):
+            restic_config = maintenance_config(config, args.remote)
+        restic = ResticRunner(restic_config)
         if args.command == "init":
             restic.init()
             return 0

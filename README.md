@@ -708,7 +708,21 @@ Keeping `after_backup: false` avoids making every normal backup run perform repo
 
 `backupdock forget` first applies the configured retention policy to normal `backupdock` snapshots. It then removes a `backupdock-preseed` snapshot only if a remaining normal snapshot has the same hostname, BackupDock group tag, and source paths, and an equal or later timestamp. Preseeds without such a replacement remain available, including after an unsuccessful first consistent backup. Unrecognized or incomplete snapshot metadata is never used to authorize preseed removal. Preseeds do not participate in the normal retention selection.
 
-`backupdock forget --prune` runs pruning once, after both retention and preseed cleanup succeed. Without pruning, snapshot removal alone does not reclaim all unreferenced repository data. These commands use the top-level `restic.repository` and `restic.password_file` settings (or standard Restic environment variables); they do not automatically select a repository from `remotes`.
+`backupdock forget --prune` runs pruning once, after both retention and preseed cleanup succeed. Without pruning, snapshot removal alone does not reclaim all unreferenced repository data.
+
+For `snapshots`, `check`, and `forget`, an explicit top-level `restic.repository` (including `RESTIC_REPOSITORY`) retains the existing local access behavior. Otherwise, a controller with exactly one remote automatically selects it. BackupDock reads `BACKUP_DIR` from `/etc/default/restic-rest-server`, appends that remote's `repository_path`, and uses the remote's repository `password_file`. The storage root and password do not need to be duplicated in the BackupDock configuration. Reads happen only when invoking these commands, so a missing service configuration does not affect `remote-backup` or inventory.
+
+With several remotes, select the repository explicitly:
+
+```bash
+backupdock snapshots --remote docker-prod
+backupdock check --remote docker-prod
+backupdock forget --remote docker-prod --prune
+```
+
+`--remote` explicitly selects the remote even if a top-level repository is configured. Selection applies to one repository per command; BackupDock does not silently clean every remote.
+
+If the packaged service uses another configuration file, set `restic.rest_server_config_file` to that file's path. Supported `BACKUP_DIR` assignments are literal absolute paths, optionally quoted and with whitespace or inline comments. The file is never executed or sourced. Missing, duplicate, relative, or shell-expanded values, a `--path` override, path traversal, a symlink escaping the root, or a missing repository `config` file cause an error before invoking Restic. Automatic discovery requires a loopback rest-server and does not inspect custom systemd command overrides or Docker mount mappings; configure an explicit local repository for those setups.
 
 For append-only remote backups, run retention locally on the backup server against the repository path rather than through `remote-backup`.
 
