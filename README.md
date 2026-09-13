@@ -551,7 +551,11 @@ The source-side command is `backupdock source-backup`; it is normally invoked on
 
 Automatic retention is intentionally disabled for `source-backup`. Destructive retention operations must not be sent through the append-only endpoint.
 
-If the SSH session is interrupted, BackupDock handles `SIGHUP` in addition to `SIGINT` and `SIGTERM`, so an interrupted source-side run reaches the same guarded restart path for containers already stopped by BackupDock.
+The controller and source handle `SIGINT`, `SIGHUP`, and `SIGTERM` without a Python traceback, returning exit codes 130, 129, and 143 respectively. Signal handlers are active before the controller's version check and before source discovery, and are restored when the command finishes. SSH remains non-interactive (`-T`); credentials still travel only through standard input.
+
+On interruption, BackupDock terminates and waits for its active SSH or Restic child, escalating to a kill after five seconds if needed. Restic is stopped before container recovery begins. During recovery, additional interruption signals are ignored so every restart candidate can be attempted. A broken output pipe cannot prevent container recovery; temporary source-session configuration and credential environment variables are cleaned up afterward.
+
+An SSH disconnect does not guarantee that OpenSSH delivers a signal to a non-PTY source process. Source recovery begins when it receives a handled signal, encounters a broken output pipe, or Restic reports a transport failure; it is not an acknowledgment from the source when the controller exits. Verify the actual SSH disconnect behavior on the deployment hosts. Forced process termination (`SIGKILL`) or host failure cannot run this cleanup.
 
 ## CLI
 

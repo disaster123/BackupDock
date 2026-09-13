@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from backupdock.config import ResticConfig, RetentionConfig
+from backupdock.processes import run_process, terminate_process
 
 
 class ResticError(RuntimeError):
@@ -78,7 +79,7 @@ class ResticRunner:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         try:
-            result = subprocess.run(
+            result = run_process(
                 command,
                 env=self._env(),
                 text=True,
@@ -177,6 +178,7 @@ class ResticRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=1,
+                start_new_session=True,
             )
             if process.stdout is None:
                 raise ResticError("Cannot read Restic progress output")
@@ -218,16 +220,14 @@ class ResticRunner:
         except FileNotFoundError as exc:
             raise ResticError(f"Restic binary not found: {self.config.binary}") from exc
         except BaseException:
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+            if process is not None:
+                terminate_process(process)
             raise
         finally:
-            self._clear_progress(progress_width)
+            try:
+                self._clear_progress(progress_width)
+            except BrokenPipeError:
+                pass
             if process is not None and process.stdout is not None:
                 process.stdout.close()
 

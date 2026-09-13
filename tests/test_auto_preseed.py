@@ -136,7 +136,7 @@ class AutoPreseedTests(unittest.TestCase):
         )
         runner = ResticRunner(ResticConfig(binary="restic", host="docker-prod"), progress=False)
 
-        with patch("backupdock.restic.subprocess.run", return_value=completed):
+        with patch("backupdock.restic.run_process", return_value=completed):
             result = runner.preflight()
 
         self.assertEqual(result, {"compose:app"})
@@ -144,7 +144,7 @@ class AutoPreseedTests(unittest.TestCase):
     def test_dry_run_cannot_claim_repository_snapshot_state(self) -> None:
         runner = ResticRunner(ResticConfig(binary="restic"), dry_run=True, progress=False)
 
-        with patch("backupdock.restic.subprocess.run") as subprocess_run:
+        with patch("backupdock.restic.run_process") as subprocess_run:
             result = runner.preflight()
 
         self.assertIsNone(result)

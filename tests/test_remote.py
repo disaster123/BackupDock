@@ -117,7 +117,7 @@ class RemoteBackupTests(unittest.TestCase):
 
             with (
                 patch("backupdock.remote.ResticRunner") as runner_class,
-                patch("backupdock.remote.subprocess.run") as subprocess_run,
+                patch("backupdock.remote.run_process") as subprocess_run,
             ):
                 controller.init_repository()
 
@@ -173,7 +173,7 @@ class RemoteBackupTests(unittest.TestCase):
                     )
                 return subprocess.CompletedProcess(command, 0)
 
-            with patch("backupdock.remote.subprocess.run", side_effect=run):
+            with patch("backupdock.remote.run_process", side_effect=run):
                 controller.run([], dry_run=False)
 
             self.assertEqual(len(calls), 2)
@@ -186,7 +186,7 @@ class RemoteBackupTests(unittest.TestCase):
             Path("/also/not/present"),
         )
 
-        with patch("backupdock.remote.subprocess.run") as run:
+        with patch("backupdock.remote.run_process") as run:
             run.return_value = subprocess.CompletedProcess(
                 [],
                 0,
@@ -262,7 +262,7 @@ class RemoteBackupTests(unittest.TestCase):
             rest_password_file.write_text("rest-value\n", encoding="utf-8")
             controller = self._controller(password_file, rest_password_file)
 
-            with patch("backupdock.remote.subprocess.run") as run:
+            with patch("backupdock.remote.run_process") as run:
                 run.side_effect = [
                     subprocess.CompletedProcess(
                         [],
@@ -294,7 +294,7 @@ class RemoteBackupTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with (
-            patch("backupdock.remote.subprocess.run") as run,
+            patch("backupdock.remote.run_process") as run,
             contextlib.redirect_stdout(stdout),
         ):
             run.side_effect = [
@@ -327,7 +327,7 @@ class RemoteBackupTests(unittest.TestCase):
             rest_password_file.write_text("rest-value\n", encoding="utf-8")
             controller = self._controller(password_file, rest_password_file)
 
-            with patch("backupdock.remote.subprocess.run") as run:
+            with patch("backupdock.remote.run_process") as run:
                 run.side_effect = [
                     subprocess.CompletedProcess(
                         [],

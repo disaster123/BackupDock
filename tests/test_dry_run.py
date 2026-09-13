@@ -99,7 +99,7 @@ class DryRunTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with (
-            patch("backupdock.restic.subprocess.run") as subprocess_run,
+            patch("backupdock.restic.run_process") as subprocess_run,
             patch("backupdock.restic.subprocess.Popen") as subprocess_popen,
             contextlib.redirect_stdout(stdout),
         ):

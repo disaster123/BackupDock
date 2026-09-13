@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -10,6 +9,7 @@ from urllib.parse import quote
 from backupdock import __version__
 from backupdock.config import AppConfig, RemoteConfig, ResticConfig, render_source_config
 from backupdock.restic import ResticRunner
+from backupdock.processes import run_process
 
 
 REMOTE_PROTOCOL_VERSION = 2
@@ -106,7 +106,7 @@ class RemoteBackupController:
     def _check_remote_version(self) -> None:
         command = self.info_command()
         try:
-            result = subprocess.run(
+            result = run_process(
                 command,
                 text=True,
                 capture_output=True,
@@ -219,7 +219,7 @@ class RemoteBackupController:
             print(f"REMOTE DRY-RUN ssh command: {shlex.join(command)}")
 
         try:
-            result = subprocess.run(
+            result = run_process(
                 command,
                 input=payload,
                 text=True,

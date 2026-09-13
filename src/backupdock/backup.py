@@ -11,6 +11,7 @@ from backupdock.config import AppConfig
 from backupdock.discovery import paths_overlap
 from backupdock.models import BackupGroup, BackupSource
 from backupdock.ordering import DependencyOrderError, running_containers_in_stop_order
+from backupdock.processes import protected_cleanup
 
 
 logger = logging.getLogger(__name__)
@@ -120,9 +121,13 @@ class BackupOrchestrator:
     def _restart(self, group_key: str, restart_candidates: list) -> list[str]:
         errors: list[str] = []
         for container in reversed(restart_candidates):
-            self._status(
-                f"[{group_key}] ensuring container {self._container_label(container)} is running"
-            )
+            try:
+                self._status(
+                    f"[{group_key}] ensuring container {self._container_label(container)} is running"
+                )
+            except OSError:
+                # A disconnected output must not prevent container recovery.
+                pass
             try:
                 self.docker.ensure_running(container.id)
             except Exception as exc:
@@ -257,7 +262,8 @@ class BackupOrchestrator:
         except BaseException as exc:
             primary_error = exc
         finally:
-            restart_errors = self._restart(group.key, restart_candidates)
+            with protected_cleanup():
+                restart_errors = self._restart(group.key, restart_candidates)
 
         if restart_errors:
             message = "Failed to restore the original running state: " + "; ".join(restart_errors)

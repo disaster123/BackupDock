@@ -19,6 +19,7 @@ from backupdock.locking import LockError, ProcessLock
 from backupdock.models import BackupSource
 from backupdock.remote import REMOTE_PROTOCOL_VERSION, RemoteBackupController, RemoteBackupError
 from backupdock.restic import ResticError, ResticRunner
+from backupdock.processes import INTERRUPTION_SIGNALS
 
 
 SOURCE_RUNTIME_DIR = Path("/run/backupdock")
@@ -177,7 +178,6 @@ def _run_backup(
         groups, host_path_sources = _discover(config, docker)
         selected_groups = _select_groups(groups, projects)
         selected_host_sources = host_path_sources if not projects else []
-        _install_signal_handlers()
 
         lock_path = config.backup.state_dir / "backupdock.lock"
         with ProcessLock(lock_path):
@@ -304,7 +304,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    previous_handlers = {}
     try:
+        if args.command in ("backup", "source-backup", "remote-backup"):
+            previous_handlers = {signum: signal.getsignal(signum) for signum in INTERRUPTION_SIGNALS}
+            _install_signal_handlers()
         if args.command == "source-info":
             _source_info()
             return 0
@@ -373,12 +377,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"Unsupported command: {args.command}")
 
     except KeyboardInterrupt:
-        print(file=sys.stdout, flush=True)
-        print("backupdock: interrupted by SIGINT", file=sys.stderr)
+        _report_error("interrupted by SIGINT")
         return 128 + signal.SIGINT
     except BackupInterrupted as exc:
-        print(file=sys.stdout, flush=True)
-        print(f"backupdock: {exc}", file=sys.stderr)
+        _report_error(f"interrupted by {signal.Signals(exc.signum).name}")
         return 128 + exc.signum
     except (
         DiscoveryError,
@@ -388,9 +390,26 @@ def main(argv: list[str] | None = None) -> int:
         ResticError,
         RuntimeError,
         ValueError,
+        BrokenPipeError,
     ) as exc:
-        print(f"backupdock: error: {exc}", file=sys.stderr)
+        _report_error(f"error: {exc}")
         return 1
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
+def _report_error(message: str) -> None:
+    for stream, text in ((sys.stdout, ""), (sys.stderr, f"backupdock: {message}")):
+        try:
+            print(text, file=stream, flush=True)
+        except BrokenPipeError:
+            # Avoid a second broken-pipe error during interpreter shutdown.
+            try:
+                with open(os.devnull, "w") as sink:
+                    os.dup2(sink.fileno(), stream.fileno())
+            except (OSError, ValueError, AttributeError):
+                pass
 
 
 if __name__ == "__main__":
