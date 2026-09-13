@@ -706,6 +706,10 @@ retention:
 
 Keeping `after_backup: false` avoids making every normal backup run perform repository maintenance. `backupdock forget` can be scheduled independently.
 
+`backupdock forget` first applies the configured retention policy to normal `backupdock` snapshots. It then removes a `backupdock-preseed` snapshot only if a remaining normal snapshot has the same hostname, BackupDock group tag, and source paths, and an equal or later timestamp. Preseeds without such a replacement remain available, including after an unsuccessful first consistent backup. Unrecognized or incomplete snapshot metadata is never used to authorize preseed removal. Preseeds do not participate in the normal retention selection.
+
+`backupdock forget --prune` runs pruning once, after both retention and preseed cleanup succeed. Without pruning, snapshot removal alone does not reclaim all unreferenced repository data. These commands use the top-level `restic.repository` and `restic.password_file` settings (or standard Restic environment variables); they do not automatically select a repository from `remotes`.
+
 For append-only remote backups, run retention locally on the backup server against the repository path rather than through `remote-backup`.
 
 ## Scheduling

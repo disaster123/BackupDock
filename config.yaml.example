@@ -96,6 +96,10 @@ remotes: {}
 # Retention belongs to the machine that has maintenance access to the
 # repository. Remote source backups always force after_backup/prune off because
 # the source reaches the repository only through an append-only endpoint.
+# `backupdock forget` applies keep_* to normal snapshots, then removes preseeds
+# replaced by a remaining normal snapshot of the same host, group and paths.
+# Unreplaced preseeds are kept. `prune: true` or `forget --prune` reclaims unused
+# data once after both steps. Maintenance uses the top-level restic settings.
 retention:
   after_backup: false
   prune: false

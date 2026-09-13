@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 
 from backupdock.config import ResticConfig, RetentionConfig
@@ -294,6 +296,72 @@ class ResticRunner:
     def check(self) -> None:
         self._run(["check"])
 
+    @staticmethod
+    def _preseed_metadata(snapshot: object):
+        if not isinstance(snapshot, dict):
+            return None
+        snapshot_id = snapshot.get("id")
+        hostname = snapshot.get("hostname")
+        paths = snapshot.get("paths")
+        tags = snapshot.get("tags")
+        time_text = snapshot.get("time")
+        if (
+            not isinstance(snapshot_id, str) or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id)
+            or not isinstance(hostname, str) or not hostname
+            or not isinstance(paths, list) or not paths
+            or not all(isinstance(path, str) and path for path in paths)
+            or not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags)
+            or not isinstance(time_text, str)
+        ):
+            return None
+        primary_tags = set(tags) & {"backupdock", "backupdock-preseed"}
+        group_tags = {tag for tag in tags if tag.startswith("backupdock-group=")}
+        if len(primary_tags) != 1 or len(group_tags) != 1:
+            return None
+        group_tag = next(iter(group_tags))
+        if not group_tag.removeprefix("backupdock-group="):
+            return None
+        try:
+            timestamp = datetime.fromisoformat(time_text)
+        except ValueError:
+            return None
+        if timestamp.tzinfo is None:
+            return None
+        # Preserve Restic's nanosecond precision beyond datetime's microseconds.
+        fraction = re.search(r"\.(\d+)(?:Z|[+-]\d{2}:\d{2})$", time_text)
+        digits = fraction.group(1) if fraction else ""
+        if len(digits) > 9:
+            return None
+        nanoseconds = int(digits.ljust(9, "0")) % 1000
+        identity = (hostname, group_tag, tuple(sorted(set(paths))))
+        return snapshot_id, next(iter(primary_tags)), identity, (timestamp, nanoseconds)
+
+    def _forget_superseded_preseeds(self) -> None:
+        result = self._run(["snapshots", "--json"], capture=True)
+        if self.dry_run:
+            print("DRY-RUN preseed cleanup decision unavailable: requires remaining repository snapshots")
+            return
+        try:
+            snapshots = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ResticError("Cannot clean up preseed snapshots: invalid snapshots JSON") from exc
+        if not isinstance(snapshots, list):
+            raise ResticError("Cannot clean up preseed snapshots: unexpected snapshots JSON structure")
+
+        metadata = [value for snapshot in snapshots if (value := self._preseed_metadata(snapshot)) is not None]
+        latest_consistent = {}
+        for snapshot_id, tag, identity, timestamp in metadata:
+            if tag == "backupdock":
+                latest_consistent[identity] = max(timestamp, latest_consistent.get(identity, timestamp))
+        superseded = sorted({
+            snapshot_id for snapshot_id, tag, identity, timestamp in metadata
+            if tag == "backupdock-preseed" and identity in latest_consistent
+            and latest_consistent[identity] >= timestamp
+        })
+        print(f"BackupDock: removing {len(superseded)} superseded preseed snapshot(s)", flush=True)
+        for offset in range(0, len(superseded), 256):
+            self._run(["forget", *superseded[offset:offset + 256]])
+
     def forget(self, retention: RetentionConfig, *, prune: bool | None = None) -> None:
         if not retention.configured():
             raise ResticError("No retention policy is configured")
@@ -303,6 +371,8 @@ class ResticRunner:
             value = getattr(retention, f"keep_{name}")
             if value is not None:
                 args.extend([f"--keep-{name}", str(value)])
-        if retention.prune if prune is None else prune:
-            args.append("--prune")
         self._run(args)
+        # Inspect the snapshots that survived retention before deleting preseeds.
+        self._forget_superseded_preseeds()
+        if retention.prune if prune is None else prune:
+            self._run(["prune"])
