@@ -20,19 +20,19 @@ class MaintenanceTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.backups = self.root / "Backups with spaces"
-        self.repository = self.backups / "flexserver"
+        self.repository = self.backups / "docker-prod"
         self.repository.mkdir(parents=True)
         (self.repository / "config").write_text("{}")
         self.service_config = self.root / "rest-server-defaults"
         self.service_config.write_text(f'BACKUP_DIR = "{self.backups}"\nARGS = "--append-only"\n')
         self.remote = RemoteConfig(
             ssh_target="source", password_file=self.root / "repository-password",
-            repository_path="flexserver", rest_server_username="source",
+            repository_path="docker-prod", rest_server_username="source",
             rest_server_password_file=self.root / "rest-password",
         )
         self.config = AppConfig(
             restic=ResticConfig(binary="restic-custom", rest_server_config_file=self.service_config),
-            remotes={"flexserver": self.remote}, retention=RetentionConfig(keep_daily=14, prune=True),
+            remotes={"docker-prod": self.remote}, retention=RetentionConfig(keep_daily=14, prune=True),
         )
 
     def test_single_remote_uses_service_root_and_remote_password(self):
@@ -43,16 +43,16 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_changed_service_root_is_used_on_next_resolution(self):
         updated = self.root / "new-location"
-        (updated / "flexserver").mkdir(parents=True)
-        (updated / "flexserver" / "config").write_text("{}")
+        (updated / "docker-prod").mkdir(parents=True)
+        (updated / "docker-prod" / "config").write_text("{}")
         self.service_config.write_text(f"BACKUP_DIR={updated}\n")
-        self.assertEqual(maintenance_config(self.config).repository, str(updated / "flexserver"))
+        self.assertEqual(maintenance_config(self.config).repository, str(updated / "docker-prod"))
 
     def test_multiple_remotes_require_selection(self):
-        config = replace(self.config, remotes={"flexserver": self.remote, "other": replace(self.remote, repository_path="other")})
+        config = replace(self.config, remotes={"docker-prod": self.remote, "other": replace(self.remote, repository_path="other")})
         with self.assertRaisesRegex(ValueError, "--remote"):
             maintenance_config(config)
-        self.assertEqual(maintenance_config(config, "flexserver").repository, str(self.repository))
+        self.assertEqual(maintenance_config(config, "docker-prod").repository, str(self.repository))
 
     def test_explicit_local_repository_is_preserved_without_reading_service_config(self):
         restic = replace(self.config.restic, repository="sftp:backup:/repo", password_file=Path("/local-password"))
@@ -62,7 +62,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_explicit_remote_overrides_top_level_repository_and_password(self):
         config = replace(self.config, restic=replace(self.config.restic, repository="/other", password_file=Path("/other-password")))
-        result = maintenance_config(config, "flexserver")
+        result = maintenance_config(config, "docker-prod")
         self.assertEqual(result.repository, str(self.repository))
         self.assertEqual(result.password_file, self.remote.password_file)
 
@@ -101,20 +101,20 @@ class MaintenanceTests(unittest.TestCase):
     def test_traversal_missing_repository_and_symlink_escape_are_rejected(self):
         for path in ("../other", "/../other", "/", ".", "missing"):
             with self.subTest(path=path), self.assertRaises(ValueError):
-                maintenance_config(replace(self.config, remotes={"flexserver": replace(self.remote, repository_path=path)}))
+                maintenance_config(replace(self.config, remotes={"docker-prod": replace(self.remote, repository_path=path)}))
         outside = self.root / "outside"
         outside.mkdir()
         (outside / "config").write_text("{}")
         (self.backups / "escaped").symlink_to(outside, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "outside"):
-            maintenance_config(replace(self.config, remotes={"flexserver": replace(self.remote, repository_path="escaped")}))
+            maintenance_config(replace(self.config, remotes={"docker-prod": replace(self.remote, repository_path="escaped")}))
 
     def test_leading_slash_matches_existing_remote_url_behavior(self):
-        config = replace(self.config, remotes={"flexserver": replace(self.remote, repository_path="/flexserver")})
+        config = replace(self.config, remotes={"docker-prod": replace(self.remote, repository_path="/docker-prod")})
         self.assertEqual(maintenance_config(config).repository, str(self.repository))
 
     def test_nonlocal_endpoint_cannot_use_local_discovery(self):
-        config = replace(self.config, remotes={"flexserver": replace(self.remote, local_rest_server_host="elsewhere.example")})
+        config = replace(self.config, remotes={"docker-prod": replace(self.remote, local_rest_server_host="elsewhere.example")})
         with self.assertRaisesRegex(ValueError, "loopback"):
             maintenance_config(config)
 
@@ -123,7 +123,7 @@ class MaintenanceTests(unittest.TestCase):
         config_path.write_text(f"restic:\n  rest_server_config_file: {self.service_config}\n")
         result = load_config(config_path, use_environment=False)
         self.assertEqual(result.restic.rest_server_config_file, self.service_config)
-        source_yaml = render_source_config(self.config, self.remote, repository="rest:http://127.0.0.1:18080/flexserver")
+        source_yaml = render_source_config(self.config, self.remote, repository="rest:http://127.0.0.1:18080/docker-prod")
         self.assertNotIn("rest_server_config_file", source_yaml)
         self.assertNotIn(str(self.backups), source_yaml)
 
@@ -136,7 +136,7 @@ class MaintenanceTests(unittest.TestCase):
                 patch("backupdock.cli.DockerBackend") as docker,
                 patch("backupdock.cli.RemoteBackupController") as ssh,
             ):
-                self.assertEqual(main([command, "--remote", "flexserver"]), 0)
+                self.assertEqual(main([command, "--remote", "docker-prod"]), 0)
                 selected = runner.call_args.args[0]
                 self.assertEqual(selected.repository, str(self.repository))
                 self.assertEqual(selected.password_file, self.remote.password_file)

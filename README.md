@@ -294,9 +294,9 @@ For local mode, prefer a project-specific exclusion when the volume belongs to o
 
 ```yaml
 projects:
-  pve-backup-server-dockerfiles:
+  backup-service:
     exclude_volumes:
-      - "pve-backup-server-dockerfiles_backups"
+      - "backup-service_backups"
 ```
 
 For remote mode, keep the rule with the remote host that owns the project:
@@ -306,9 +306,9 @@ remotes:
   docker-prod:
     # connection and repository settings omitted here
     projects:
-      pve-backup-server-dockerfiles:
+      backup-service:
         exclude_volumes:
-          - "pve-backup-server-dockerfiles_backups"
+          - "backup-service_backups"
 ```
 
 The other volumes of that project remain part of the backup. Volume names can be copied directly from `backupdock inventory` on the corresponding source host.
@@ -496,9 +496,9 @@ remotes:
     exclude_volumes: []
     ignore_containers: []
     projects:
-      pve-backup-server-dockerfiles:
+      backup-service:
         exclude_volumes:
-          - "pve-backup-server-dockerfiles_backups"
+          - "backup-service_backups"
 
     source_command:
       - "backupdock"
@@ -734,7 +734,7 @@ For remote mode, schedule `backupdock remote-backup REMOTE_NAME` on the backup s
 
 ### Cron on the backup server
 
-A complete remote-mode example is available in [`examples/backupdock.cron`](examples/backupdock.cron). Replace `flexserver` in the commands and lock-file names with your configured remote name, then install it as `/etc/cron.d/backupdock`:
+A complete remote-mode example is available in [`examples/backupdock.cron`](examples/backupdock.cron). Replace `docker-prod` in the commands and lock-file names with your configured remote name, then install it as `/etc/cron.d/backupdock`:
 
 ```bash
 sudo install -o root -g root -m 0644 examples/backupdock.cron /etc/cron.d/backupdock
@@ -747,10 +747,10 @@ SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Daily backup; apply retention and prune only after a successful backup.
-0 3 * * * root /usr/bin/flock -n /run/lock/backupdock-flexserver.lock /bin/sh -c '/usr/bin/backupdock remote-backup flexserver && /usr/bin/backupdock forget --remote flexserver --prune' >> /var/log/backupdock.log 2>&1
+0 3 * * * root /usr/bin/flock -n /run/lock/backupdock-docker-prod.lock /bin/sh -c '/usr/bin/backupdock remote-backup docker-prod && /usr/bin/backupdock forget --remote docker-prod --prune' >> /var/log/backupdock.log 2>&1
 
 # Weekly repository check.
-0 12 * * 0 root /usr/bin/flock -n /run/lock/backupdock-flexserver.lock /usr/bin/backupdock check --remote flexserver >> /var/log/backupdock.log 2>&1
+0 12 * * 0 root /usr/bin/flock -n /run/lock/backupdock-docker-prod.lock /usr/bin/backupdock check --remote docker-prod >> /var/log/backupdock.log 2>&1
 ```
 
 The daily job starts at 03:00 in the backup server's local timezone. After a successful backup, it applies the retention policy from `/etc/backupdock/config.yaml`, removes superseded preseeds, and prunes unreferenced data. Automatic preseed selection needs no extra flag. The weekly job checks the repository on Sundays at 12:00. SSH authentication must work unattended as `root`, without password or host-key confirmation prompts. Keep the final newline in the cron file; `/etc/cron.d/` entries require the `root` user field.

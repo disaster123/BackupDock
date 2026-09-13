@@ -1,10 +1,10 @@
 # Install as /etc/cron.d/backupdock on the backup server.
-# Replace flexserver with the remote name from /etc/backupdock/config.yaml.
+# Replace docker-prod with the remote name from /etc/backupdock/config.yaml.
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Daily backup; apply retention and prune only after a successful backup.
-0 3 * * * root /usr/bin/flock -n /run/lock/backupdock-flexserver.lock /bin/sh -c '/usr/bin/backupdock remote-backup flexserver && /usr/bin/backupdock forget --remote flexserver --prune' >> /var/log/backupdock.log 2>&1
+0 3 * * * root /usr/bin/flock -n /run/lock/backupdock-docker-prod.lock /bin/sh -c '/usr/bin/backupdock remote-backup docker-prod && /usr/bin/backupdock forget --remote docker-prod --prune' >> /var/log/backupdock.log 2>&1
 
 # Weekly repository check; use the same lock as the daily job.
-0 12 * * 0 root /usr/bin/flock -n /run/lock/backupdock-flexserver.lock /usr/bin/backupdock check --remote flexserver >> /var/log/backupdock.log 2>&1
+0 12 * * 0 root /usr/bin/flock -n /run/lock/backupdock-docker-prod.lock /usr/bin/backupdock check --remote docker-prod >> /var/log/backupdock.log 2>&1
