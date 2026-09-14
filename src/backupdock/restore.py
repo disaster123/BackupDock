@@ -181,7 +181,7 @@ def isolate_compose(model: dict, manifest: dict, root: Path, name: str) -> dict:
             if key not in mapping:
                 raise RestoreError(f"Mount is missing from the archived manifest: {service}:{destination}")
             seen.add(key)
-            mounts.append({"type": "bind", "source": str(restored_path(root, mapping[key])), "target": destination,
+            mounts.append({"type": "bind", "source": escape_interpolation(str(restored_path(root, mapping[key]))), "target": destination,
                            "read_only": bool(mount.get("read_only")), "bind": {"create_host_path": False}})
         if seen != {key for key in mapping if key[0] == service}:
             raise RestoreError(f"Compose mounts do not match the archived container: {service}")
@@ -340,6 +340,7 @@ class TestRestore:
                     value = paths[f"ARCHIVE_PATH_{index}"]
                     if not isinstance(value, str) or not value:
                         raise RestoreError("Cannot resolve archived service environment file path")
+                    value = value.replace("$$", "$")
                     path = Path(value)
                     if not path.is_absolute():
                         path = archive_path(next(iter(working_dirs))) / path
@@ -355,7 +356,8 @@ class TestRestore:
             model = isolate_compose(resolved, manifest, root, name)
             for options in model["services"].values():
                 options.pop("env_file", None)
-            return escape_interpolation(model)
+            # Compose config already returns interpolation-safe strings.
+            return model
 
     @staticmethod
     def _check_project_unused(name: str) -> None:

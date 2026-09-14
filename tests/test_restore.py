@@ -280,6 +280,7 @@ class RestoreExecutionTests(unittest.TestCase):
             env_file = Path(model["services"]["web"]["env_file"][0]["path"])
             self.assertEqual(env_file.read_text(), "PASSWORD=archived-password\n")
             model["services"]["web"]["environment"]["PASSWORD"] = "archived-password"
+            model["services"]["web"]["environment"]["VALUE"] = "literal$$secret"
             return subprocess.CompletedProcess(args, 0, stdout=json.dumps(model))
         with patch.dict(os.environ, {"TOKEN": "production-value", "COMPOSE_FILE": "/production.yaml"}), patch.object(TestRestore, "_compose", side_effect=normalize):
             model = TestRestore(runner, Path("/state"))._prepare(snapshot(), value, Path("/state/restores/test"), "test")
@@ -349,7 +350,8 @@ volumes:
             generated.write_text(json.dumps(model))
             resolved = json.loads(TestRestore._compose(["-p", "app-test", "-f", str(generated), "config", "--format", "json"], capture=True).stdout)
         self.assertEqual(resolved["services"]["web"]["image"], "example/app:1.0")
-        self.assertEqual(resolved["services"]["web"]["environment"]["TOKEN"], "literal$secret")
+        self.assertEqual(model["services"]["web"]["environment"]["TOKEN"], "literal$$secret")
+        self.assertEqual(resolved["services"]["web"]["environment"]["TOKEN"], model["services"]["web"]["environment"]["TOKEN"])
         self.assertEqual(resolved["services"]["web"]["environment"]["DATABASE_HOST"], "db")
         self.assertEqual(resolved["services"]["web"]["environment"]["INHERITED_TOKEN"], "archived-token")
         self.assertTrue(resolved["networks"]["default"]["internal"])
