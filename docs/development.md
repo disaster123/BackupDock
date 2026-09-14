@@ -31,12 +31,8 @@ Release creation is automated. Before publishing:
 
 1. Update the version in `pyproject.toml` and `src/backupdock/__init__.py`.
 2. Add the matching `CHANGELOG.md` section.
-3. Merge the release commit to `main` and wait for the test workflow to pass.
-4. Create and push an annotated matching tag, for example:
+3. Merge the release commit to `main`.
 
-   ```bash
-   git tag -a v0.3.20 -m "BackupDock 0.3.20"
-   git push origin v0.3.20
-   ```
+When `main` contains a package version without a matching GitHub Release, the release workflow verifies both package version declarations and the changelog, reruns the complete test suite on Python 3.11, 3.12 and 3.13, creates a missing annotated `vX.Y.Z` tag and publishes the GitHub Release from the changelog section. If the tag already exists, the workflow verifies the remote annotated tag and tests that exact commit before publishing the missing release. A failed validation or test prevents publication.
 
-The release workflow verifies the tag format, both package version declarations and the changelog. It reruns the complete test suite on Python 3.11, 3.12 and 3.13, then creates the matching GitHub Release from the changelog section. A failed validation or test prevents publication.
+Manually pushed annotated version tags remain supported and pass through the same validation and tests. Normal commits for an already tagged package version do not republish the release.

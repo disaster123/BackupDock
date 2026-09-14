@@ -2,6 +2,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
@@ -9,29 +11,81 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-publishing
   cancel-in-progress: false
 
 jobs:
-  validate-and-test:
+  prepare:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_ref: ${{ steps.release.outputs.release_ref }}
+      create_tag: ${{ steps.release.outputs.create_tag }}
+      should_release: ${{ steps.release.outputs.should_release }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Verify tag and package versions
+      - name: Determine release target
+        id: release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          test "$(git cat-file -t "$RELEASE_TAG")" = tag
-          git merge-base --is-ancestor "${RELEASE_TAG}^{commit}" origin/main
+          package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          release_tag="v${package_version}"
+          if [ "$REF_TYPE" = "tag" ]; then
+            release_tag="$REF_NAME"
+          fi
+
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $release_tag" >&2
+            exit 1
+          fi
+
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "BackupDock $package_version already has a GitHub Release."
+            exit 0
+          fi
+
+          remote_tag_object="$(git ls-remote origin "refs/tags/$release_tag" | awk 'NR == 1 { print $1 }')"
+          remote_tag_commit="$(git ls-remote origin "refs/tags/${release_tag}^{}" | awk 'NR == 1 { print $1 }')"
+
+          if [ -n "$remote_tag_object" ]; then
+            if [ -z "$remote_tag_commit" ]; then
+              echo "Release tag $release_tag is not an annotated tag." >&2
+              exit 1
+            fi
+            git merge-base --is-ancestor "$remote_tag_commit" origin/main
+            release_ref="$remote_tag_commit"
+            create_tag=false
+          elif [ "$REF_TYPE" = "tag" ]; then
+            echo "Release tag $release_tag is missing on the remote." >&2
+            exit 1
+          else
+            release_ref="$GITHUB_SHA"
+            create_tag=true
+          fi
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
+          echo "create_tag=$create_tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.release.outputs.should_release == 'true'
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.release.outputs.release_ref }}
+      - name: Validate release metadata
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
           python - <<'PY'
           import os
           import pathlib
@@ -62,6 +116,22 @@ jobs:
           if f"## [{expected}]" not in changelog:
               raise SystemExit(f"CHANGELOG.md has no release section for {expected}")
           PY
+
+  validate-and-test:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
       - name: Install BackupDock
         run: python -m pip install -e .
       - name: Validate shell scripts
@@ -72,16 +142,30 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   publish:
-    needs: validate-and-test
+    needs: [prepare, validate-and-test]
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_ref }}
+      - name: Create annotated tag
+        if: needs.prepare.outputs.create_tag == 'true'
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_REF: ${{ needs.prepare.outputs.release_ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" "$RELEASE_REF" -m "BackupDock ${RELEASE_TAG#v}"
+          git push origin "refs/tags/$RELEASE_TAG"
       - name: Extract release notes
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           version="${RELEASE_TAG#v}"
           awk -v version="$version" '
@@ -93,8 +177,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             --verify-tag \
-            --title "BackupDock $GITHUB_REF_NAME" \
+            --title "BackupDock $RELEASE_TAG" \
             --notes-file release-notes.md
