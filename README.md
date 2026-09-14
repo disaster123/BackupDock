@@ -181,4 +181,4 @@ See [Development and tests](docs/development.md) for all repository checks.
 
 ## License
 
-No license file has been published yet. Until a license is selected, normal copyright restrictions apply.
+Licensed under the [Apache License 2.0](LICENSE).
