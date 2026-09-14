@@ -647,11 +647,26 @@ Initialize the repository belonging to one configured remote on the controller:
 backupdock init --remote docker-prod
 ```
 
-List BackupDock snapshots:
+List the latest normal BackupDock snapshot per host and group in a compact table, without source paths or raw tags:
 
 ```bash
 backupdock snapshots
 ```
+
+The table shows group, host, snapshot time, source-data size, and snapshot ID. A summary counts how many known host/group pairs have their latest snapshot dated today. Times and the meaning of `today` use the local timezone of the machine running the command. Older groups remain visible in the default listing, so a missing recent snapshot is easier to spot. Groups that have never produced a normal snapshot cannot be inferred from repository history alone.
+
+```bash
+backupdock snapshots --today         # Latest snapshots whose timestamps are dated today
+backupdock snapshots --all           # Compact history of all normal snapshots
+backupdock snapshots --all --today   # All normal snapshots dated today
+backupdock snapshots --details       # Original detailed Restic listing, including paths
+backupdock snapshots --json          # Raw Restic JSON for all normal snapshots
+backupdock snapshots --remote docker-prod
+```
+
+`--details` and `--json` are alternative full-listing formats and cannot be combined with `--all` or `--today`. Preseed snapshots are excluded from the compact listing. Sizes describe processed source data, not repository space or network transfer; snapshots without size statistics show `unknown`.
+
+The snapshot timestamp records the start of that backup. An existing normal snapshot does not prove that Restic read every file without errors, that container recovery succeeded, or that the complete scheduled backup and maintenance sequence finished. Use the run log to confirm those outcomes; listing snapshots does not perform `restic check`.
 
 Check repository integrity:
 

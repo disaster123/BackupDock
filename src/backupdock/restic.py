@@ -13,6 +13,7 @@ from pathlib import Path
 
 from backupdock.config import ResticConfig, RetentionConfig
 from backupdock.processes import run_process, terminate_process
+from backupdock.snapshots import render_snapshots, select_snapshots
 
 
 class ResticError(RuntimeError):
@@ -290,8 +291,26 @@ class ResticRunner:
             return
         self._run(args)
 
-    def snapshots(self) -> None:
-        self._run(["snapshots", "--tag", "backupdock"])
+    def snapshots(self, *, all_snapshots: bool = False, today: bool = False, details: bool = False, json_output: bool = False) -> None:
+        args = ["snapshots", "--tag", "backupdock"]
+        if details:
+            self._run(args)
+            return
+        result = self._run([*args, "--json"], capture=True)
+        if self.dry_run:
+            return
+        if json_output:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+            return
+        try:
+            snapshots = json.loads(result.stdout)
+            if not isinstance(snapshots, list):
+                raise ValueError("Restic snapshots returned an unexpected JSON structure")
+            now = datetime.now().astimezone()
+            records, current, groups = select_snapshots(snapshots, all_snapshots=all_snapshots, today=today, now=now)
+        except ValueError as exc:
+            raise ResticError(f"Cannot list snapshots: {exc}") from exc
+        render_snapshots(records, current=current, groups=groups, now=now, format_bytes=_format_bytes)
 
     def check(self) -> None:
         self._run(["check"])

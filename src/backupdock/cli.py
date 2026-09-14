@@ -79,6 +79,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     snapshots_parser = subparsers.add_parser("snapshots", help="List BackupDock Restic snapshots")
     snapshots_parser.add_argument("--remote", help="Select a remote repository for controller-local access")
+    snapshots_parser.add_argument("--all", action="store_true", help="Show all normal snapshots instead of the latest per host/group")
+    snapshots_parser.add_argument("--today", action="store_true", help="Show only snapshot timestamps dated today in the local timezone")
+    snapshot_format = snapshots_parser.add_mutually_exclusive_group()
+    snapshot_format.add_argument("--details", action="store_true", help="Show the original detailed Restic listing of all normal snapshots")
+    snapshot_format.add_argument("--json", action="store_true", help="Print raw Restic JSON for all normal snapshots")
     check_parser = subparsers.add_parser("check", help="Run restic check")
     check_parser.add_argument("--remote", help="Select a remote repository for controller-local access")
 
@@ -363,7 +368,9 @@ def main(argv: list[str] | None = None) -> int:
             restic.init()
             return 0
         if args.command == "snapshots":
-            restic.snapshots()
+            if (args.details or args.json) and (args.all or args.today):
+                raise ValueError("--details and --json show the full listing; use --all/--today with the compact format")
+            restic.snapshots(all_snapshots=args.all, today=args.today, details=args.details, json_output=args.json)
             return 0
         if args.command == "check":
             restic.check()
