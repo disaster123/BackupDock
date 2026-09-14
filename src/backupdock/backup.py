@@ -99,6 +99,10 @@ class BackupOrchestrator:
                 "compose_project": group.compose_project,
             },
             "containers": [asdict(container) for container in group.containers],
+            "compose_file_aliases": {
+                str(source.path): str(source.path.resolve())
+                for source in group.sources if source.kind == "compose" and source.path.is_symlink()
+            },
             "sources": [
                 {
                     **asdict(source),

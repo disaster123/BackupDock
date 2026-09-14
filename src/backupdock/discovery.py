@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from backupdock.config import AppConfig
+from backupdock.compose_metadata import ComposeMetadataError, service_environment_sources
 from backupdock.models import BackupGroup, BackupSource, ContainerInfo
 from backupdock.ordering import DependencyOrderError, containers_in_start_order
 
@@ -66,10 +67,18 @@ def _metadata_sources(containers: list[ContainerInfo]) -> list[BackupSource]:
         if dotenv.is_file():
             paths.add(dotenv)
 
-    return [
+    sources = [
         BackupSource(path=path, kind="compose", required=False)
         for path in sorted(paths, key=lambda item: str(item))
     ]
+    try:
+        sources.extend(service_environment_sources(containers))
+    except ComposeMetadataError as exc:
+        raise DiscoveryError(str(exc)) from exc
+    # Preserve the original links and also archive the file contents they refer to.
+    sources.extend(BackupSource(source.path.resolve(), "compose", required=source.required)
+                   for source in list(sources) if source.path.is_symlink())
+    return sources
 
 
 def _order_group_containers(group: BackupGroup) -> None:
@@ -175,12 +184,19 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                     sources.append(BackupSource(path=extra_path, kind="extra", required=True))
 
         if config.backup.include_compose_metadata and group.compose_project:
-            sources.extend(_metadata_sources(group.containers))
+            for source in _metadata_sources(group.containers):
+                if _excluded(source.path, exclusions):
+                    continue
+                if source.required and not source.path.is_file():
+                    raise DiscoveryError(f"Required Compose environment file is missing or not a regular file: {source.path}")
+                sources.append(source)
 
         unique: dict[tuple[str, str], BackupSource] = {}
         for source in sources:
-            key = (source.kind, str(normalized(source.path)))
-            unique.setdefault(key, source)
+            identity = Path(os.path.abspath(source.path)) if source.kind == "compose" else normalized(source.path)
+            key = (source.kind, str(identity))
+            if key not in unique or (source.required and not unique[key].required):
+                unique[key] = source
         group.sources = list(unique.values())
 
         unique_excluded: dict[tuple[str, str], BackupSource] = {}

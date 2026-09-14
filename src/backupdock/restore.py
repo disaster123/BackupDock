@@ -252,10 +252,16 @@ class TestRestore:
 
             def fetch(original: str) -> Path:
                 if not covered(manifest, original):
-                    raise RestoreError(f"Required configuration file was not included in this snapshot: {original}")
+                    raise RestoreError(f"Required configuration file was not included in this snapshot: {original}. Create a new project backup with service env_file discovery enabled.")
                 destination = restored_path(temporary, original)
                 if not destination.exists():
-                    content = self.restic._run(["dump", snapshot["id"], original], capture=True).stdout
+                    aliases = manifest.get("compose_file_aliases", {})
+                    if not isinstance(aliases, dict):
+                        raise RestoreError("Invalid archived Compose file aliases")
+                    source = aliases.get(original, original)
+                    if not covered(manifest, source):
+                        raise RestoreError(f"Compose symlink target was not included in this snapshot: {source}")
+                    content = self.restic._run(["dump", snapshot["id"], source], capture=True).stdout
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_text(content, encoding="utf-8")
                     destination.chmod(0o600)

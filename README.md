@@ -111,6 +111,7 @@ BackupDock reads the Docker daemon and discovers:
 - Docker Compose service dependency metadata
 - Compose config-file metadata exposed by Docker Compose
 - the Compose working-directory `.env` file when present
+- service-level `env_file` inputs declared in the Compose file set for known, non-ignored services
 
 `tmpfs` and non-file bind sources such as sockets or FIFOs are ignored because they are not persistent backup data.
 
@@ -121,6 +122,21 @@ BackupDock also inspects each named or anonymous volume's driver and options. Or
 Included volumes with uninspectable metadata, plugin drivers, or unsupported local mount options such as NFS, CIFS, or block-device filesystems abort discovery before any container stop. Explicitly excluded volumes are skipped; an ignored running container with an unresolved writable volume also fails because its storage overlap cannot be verified. These volume types need a separate supported backup strategy rather than reading a potentially empty Docker mountpoint.
 
 Docker images and the container writable filesystem layer are not included. Compose configuration and backed-up persistent data support recreating containers, provided their images can be pulled or rebuilt. Files stored only in the container layer need a separate backup strategy.
+
+With `backup.include_compose_metadata: true`, service environment files are included alongside the Compose configuration. Relative paths are resolved from the Compose working directory. String/list declarations and long-form `path`/`required` entries are supported; a missing required file aborts discovery before containers are stopped, while missing optional files are skipped during backup. Explicit path exclusions still apply. Symlink metadata files retain their original link and also include the target file; the manifest records the mapping so test restore reads archived contents rather than following the link into a live host path.
+
+Variable-based `env_file` paths require Docker Compose V2 with JSON config output. BackupDock resolves those paths using the project's `.env` or the interpolation files recorded by Docker, without inheriting unrelated shell variables. Docker Compose is not required for discovering plain literal environment-file paths. Compose `include`/`extends` workflows still require separate consideration and are unsupported by the current test restore.
+
+### Upgrading existing service environment-file backups
+
+Versions through 0.3.19 did not automatically include service-level `env_file` inputs unless they were already covered by another backup source. Updating does not add missing files to existing snapshots. Create a new backup of affected groups before testing restore:
+
+```bash
+backupdock remote-backup docker-prod --project app --preseed
+backupdock restore --remote docker-prod --project app --as app-test --test --dry-run
+```
+
+BackupDock does not silently replace missing archived environment files with current production files or files from another snapshot.
 
 ### Upgrading existing bind-volume backups
 
