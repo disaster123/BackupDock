@@ -41,6 +41,18 @@ git pull
 sudo ./install.sh
 ```
 
+## Installing a Release
+
+Published versions are available as immutable `vX.Y.Z` Git tags and matching GitHub Releases. To install a specific released version:
+
+```bash
+git fetch --tags
+git checkout v0.3.20
+sudo ./install.sh
+```
+
+Install exactly the same released version on the controller and every remote source host. Review the matching `CHANGELOG.md` section before updating because a release may require a new backup or restore test.
+
 Then BackupDock can be called directly:
 
 ```bash
