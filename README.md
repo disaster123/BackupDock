@@ -142,7 +142,7 @@ Read [Restore and Test Docker Compose Backups](docs/restore.md) before running t
 - Running ignored containers cannot silently write into selected backup data.
 - Dry-run uses the same orchestration path while suppressing mutations.
 
-Forced process termination or host failure cannot run recovery logic. See the [security model](docs/security.md) and [detailed backup behavior](docs/backup-behavior.md).
+Forced process termination or host failure cannot run recovery logic. See the [security model](docs/security-model.md) and [detailed backup behavior](docs/backup-behavior.md).
 
 ## Current Limitations
 
@@ -165,7 +165,7 @@ Forced process termination or host failure cannot run recovery logic. See the [s
 - [Scheduling and maintenance](docs/scheduling.md)
 - [Restore and recovery](docs/restore.md)
 - [Upgrade notes](docs/upgrading.md)
-- [Security model](docs/security.md)
+- [Security model](docs/security-model.md)
 - [Development and tests](docs/development.md)
 
 ## Development

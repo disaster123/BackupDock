@@ -21,7 +21,7 @@ Start with the quick-start guide, then choose the pages that match the deploymen
 
 - [Restore and test Docker Compose backups](restore.md)
 - [Upgrade notes](upgrading.md)
-- [Security model](security.md)
+- [Security model](security-model.md)
 
 ## Project development
 
