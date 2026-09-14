@@ -241,21 +241,9 @@ def validate_no_cross_group_storage(groups: list[BackupGroup]) -> None:
 
 def host_sources(config: AppConfig, groups: list[BackupGroup]) -> list[BackupSource]:
     sources: list[BackupSource] = []
-    persistent_group_paths = [
-        source.path
-        for group in groups
-        for source in group.sources
-        if source.persistent
-    ]
-
     for path in config.backup.host_paths:
         if _excluded(path, config.backup.exclude_paths):
             continue
-        if any(paths_overlap(path, existing) for existing in persistent_group_paths):
-            raise DiscoveryError(
-                f"Host path {path} overlaps Docker-managed backup data. "
-                "Attach it to the corresponding project instead."
-            )
         sources.append(BackupSource(path=path, kind="host", required=True))
 
     return sources

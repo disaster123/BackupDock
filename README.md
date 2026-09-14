@@ -65,7 +65,7 @@ The controller verifies that both BackupDock installations have exactly the same
 - Running state is restored even when Restic or a stop operation fails.
 - Docker's own stop timeout and stop signal configuration are respected; BackupDock does not override the stop timeout.
 - Running `--rm`/AutoRemove containers are detected before any stop operation and fail safely unless explicitly ignored.
-- Explicitly ignored containers cannot silently defeat consistency checks when they have writable access to selected backup data.
+- Explicitly ignored containers cannot silently defeat consistency checks when they have writable access to selected project backup data.
 - Standalone containers are supported as one-container backup groups.
 - Shared/overlapping persistent storage across different groups fails safely instead of silently producing an inconsistent backup.
 - An optional preseed pass can warm a repository while containers are still running before the final consistent stopped-container snapshot.
@@ -303,7 +303,7 @@ remotes:
           - "/some/additional/path"
 ```
 
-Do not use `host_paths` for live container data. Attach such data to the relevant project instead.
+`host_paths` backs up the explicitly supplied directories in full as a separate `host` snapshot while containers remain running. Paths may overlap data included in project snapshots; BackupDock does not split the root or automatically exclude container mount paths. Explicitly configured exclusions and Restic backup arguments still apply. For application-consistent backups of live container data, attach that data to its project instead. A separate host snapshot may include live copies of those same files and does not carry the stopped-container consistency guarantee.
 
 ### Excluding Docker volumes
 
@@ -356,7 +356,7 @@ remotes:
       - "temporary-worker"
 ```
 
-An ignored container is not stopped and its own mounts are not selected as backup sources. This is deliberately not a way to bypass consistency protection: if a running ignored container has writable storage that overlaps data selected for backup, BackupDock still aborts before any stop operation. `backupdock inventory` marks both `auto-remove` and `ignored` containers and shows mounts skipped because of an ignored container.
+An ignored container is not stopped and its own mounts are not selected as backup sources. This is deliberately not a way to bypass consistency protection: if a running ignored container has writable storage that overlaps data selected for a project backup, BackupDock still aborts before any stop operation. `backupdock inventory` marks both `auto-remove` and `ignored` containers and shows mounts skipped because of an ignored container.
 
 ## Optional remote backups through a reverse SSH tunnel
 

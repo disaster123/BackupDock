@@ -166,7 +166,7 @@ class BackupOrchestrator:
             for source in group.sources
             if source.persistent
         ]
-        backed_sources.extend(("host", source) for source in host_sources)
+        # Host paths are explicit live backups and may overlap container data.
 
         conflicts: set[tuple[str, str, str, str]] = set()
         for group in observed_groups:
