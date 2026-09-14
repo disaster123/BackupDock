@@ -1,170 +1,25 @@
-# BackupDock
+# BackupDock – Consistent Docker Compose Backups with Restic
 
-**Automatic, consistent and incremental backups for Docker hosts.**
+[![Tests](https://github.com/disaster123/BackupDock/actions/workflows/tests.yml/badge.svg)](https://github.com/disaster123/BackupDock/actions/workflows/tests.yml)
 
-BackupDock is a small Linux CLI that discovers persistent Docker data automatically, groups containers by Docker Compose project, stops only the project currently being backed up, and delegates deduplicated incremental storage to [Restic](https://restic.net/).
+BackupDock is a Linux command-line tool for consistent, incremental Docker Compose backups with Restic. It automatically discovers bind mounts, Docker volumes, Compose files, `.env` files, and service `env_file` inputs; stops only the affected containers; and restores their previous running state after the backup.
 
-BackupDock is intentionally not a daemon, scheduler, web UI, or replacement for Restic.
+It supports local backups, backup-server-initiated remote backups through a reverse SSH tunnel, large-backup preseeding, retention, repository checks, and isolated Docker Compose restore tests. BackupDock is intentionally not a daemon, scheduler, web UI, or replacement for Restic.
 
-> **Status:** early alpha. The backup/discovery core and isolated Compose test restores are available. In-place restore orchestration is not implemented yet. Test restores before relying on BackupDock for production data.
+> **Status:** early alpha. Test restores before relying on BackupDock for production data. In-place restore orchestration is not implemented yet.
 
-## Operating modes
+## Contents
 
-BackupDock supports two operating modes. Both use the same Docker discovery, dependency ordering, Stop/Restic/Restart transaction, manifests, exclusions, safety checks, preseed support, and dry-run logic.
+- [Quick Start](#quick-start-create-your-first-docker-backup)
+- [Docker backup features](#docker-compose-backup-features)
+- [What is backed up](#what-backupdock-backs-up)
+- [Local or remote mode](#local-or-remote-docker-backups)
+- [Restore testing](#test-a-docker-compose-restore)
+- [Documentation](#documentation)
 
-### 1. Local mode
+## Quick Start: Create Your First Docker Backup
 
-BackupDock and Restic run directly on the Docker host. The permanent configuration is stored on that host.
-
-```text
-Docker host
-├── /etc/backupdock/config.yaml
-├── BackupDock
-├── Docker
-└── Restic ────────────────> repository
-```
-
-Use this mode when the Docker host can directly reach the Restic repository:
-
-```bash
-backupdock backup
-```
-
-### 2. Remote/controller mode
-
-BackupDock is installed on both the backup server and the Docker source host. The backup server owns the single permanent configuration and initiates the backup over SSH. It creates a temporary reverse SSH tunnel so Restic on the Docker host can reach an append-only rest-server on the otherwise unreachable backup server.
-
-```text
-Backup server                         Docker source
--------------                         -------------
-/etc/backupdock/config.yaml           no permanent config required
-BackupDock controller ---- SSH -----> BackupDock
-rest-server <------ reverse tunnel -- Restic
-                                      Docker
-```
-
-The source receives only a temporary controller-generated configuration below `/run/backupdock/` for the current session. A permanent `/etc/backupdock/config.yaml` on a remote-only source is neither required nor used.
-
-Use this mode when the backup server should initiate backups or is not directly reachable from the Docker host:
-
-```bash
-backupdock remote-backup REMOTE_NAME
-```
-
-The controller verifies that both BackupDock installations have exactly the same version and compatible remote protocol before opening the backup tunnel or sending backup credentials/configuration.
-
-## Design goals
-
-- No assumptions about host directory layouts.
-- No mandatory Docker labels.
-- Automatic bind-mount and Docker-volume discovery.
-- Docker Compose projects are consistency groups.
-- Only containers in the project currently being backed up are stopped.
-- Within a Compose project, running services are stopped in reverse dependency order and restarted in dependency order.
-- Containers that were already stopped stay stopped.
-- Running state is restored even when Restic or a stop operation fails.
-- Docker's own stop timeout and stop signal configuration are respected; BackupDock does not override the stop timeout.
-- Running `--rm`/AutoRemove containers are detected before any stop operation and fail safely unless explicitly ignored.
-- Explicitly ignored containers cannot silently defeat consistency checks when they have writable access to selected project backup data.
-- Standalone containers are supported as one-container backup groups.
-- Shared/overlapping persistent storage across different groups fails safely instead of silently producing an inconsistent backup.
-- An optional preseed pass can warm a repository while containers are still running before the final consistent stopped-container snapshot.
-- Restic remains the backup engine and repository format.
-- Local backups remain the default; backup-server-initiated remote backups are optional.
-- Scheduling is left to systemd, cron, or another external scheduler.
-
-## How grouping works
-
-For containers created by Docker Compose, BackupDock uses Docker's Compose metadata, primarily `com.docker.compose.project`, to form a consistency group.
-
-```text
-Compose project A
-  stop currently-running containers in reverse dependency order
-  back up A's bind mounts, volumes and Compose metadata
-  restart exactly the previously-running containers in dependency order
-
-Compose project B
-  stop currently-running containers in reverse dependency order
-  back up B's data
-  restart exactly the previously-running containers in dependency order
-```
-
-Other Compose projects remain online while a project is being backed up.
-
-A container without Compose metadata becomes its own standalone backup group.
-
-For Compose projects, BackupDock reconstructs service dependencies from the `com.docker.compose.depends_on` metadata written by Docker Compose. It also adds resolvable same-project runtime relationships from Docker inspect data for `links`, `volumes_from`, and container network sharing. Services without dependency relationships are ordered deterministically by name. A dependency cycle aborts discovery instead of guessing an unsafe order. Dependency targets that have no container in the currently deployed project are ignored for ordering with a warning.
-
-The dependency graph only changes ordering. A service that was stopped before the backup is never started merely because another service depends on it.
-
-If writable persistent paths overlap across two different groups, BackupDock aborts discovery. It will never decide on its own to stop an unrelated Compose project. Shared read-only bind mounts are allowed.
-
-## What is discovered
-
-BackupDock reads the Docker daemon and discovers:
-
-- bind mounts (`Type=bind`)
-- Docker volumes (`Type=volume`)
-- running/stopped container state
-- container AutoRemove (`--rm`) state
-- Docker Compose project and service names
-- Docker Compose service dependency metadata
-- Compose config-file metadata exposed by Docker Compose
-- the Compose working-directory `.env` file when present
-- service-level `env_file` inputs declared in the Compose file set for known, non-ignored services
-
-`tmpfs` and non-file bind sources such as sockets or FIFOs are ignored because they are not persistent backup data.
-
-There are **no built-in paths such as `/srv/files`, `/srv/docker-config`, `/opt/docker`, or `/var/lib/docker/volumes`**. Volume source paths come from Docker itself.
-
-BackupDock also inspects each named or anonymous volume's driver and options. Ordinary local volumes use their persistent host directory. Local bind-backed volumes (`o=bind` or `rbind`, `type` empty or `none`, and an absolute `device`) use the actual device directory, because Docker's volume mountpoint may be unmounted when the last container stops. The manifest preserves Docker's original mount source and records the resolved backup source. Mounted subdirectories are preserved. Exclusions by volume name remain unchanged; path exclusions recognize both the original and resolved path. Storage overlap and ignored-container writer checks use the resolved data path.
-
-Included volumes with uninspectable metadata, plugin drivers, or unsupported local mount options such as NFS, CIFS, or block-device filesystems abort discovery before any container stop. Explicitly excluded volumes are skipped; an ignored running container with an unresolved writable volume also fails because its storage overlap cannot be verified. These volume types need a separate supported backup strategy rather than reading a potentially empty Docker mountpoint.
-
-Docker images and the container writable filesystem layer are not included. Compose configuration and backed-up persistent data support recreating containers, provided their images can be pulled or rebuilt. Files stored only in the container layer need a separate backup strategy.
-
-With `backup.include_compose_metadata: true`, service environment files are included alongside the Compose configuration. Relative paths are resolved from the Compose working directory. String/list declarations and long-form `path`/`required` entries are supported; a missing required file aborts discovery before containers are stopped, while missing optional files are skipped during backup. Explicit path exclusions still apply. Symlink metadata files retain their original link and also include the target file; the manifest records the mapping so test restore reads archived contents rather than following the link into a live host path.
-
-Variable-based `env_file` paths require Docker Compose V2 with JSON config output. BackupDock resolves those paths using the project's `.env` or the interpolation files recorded by Docker, without inheriting unrelated shell variables. Docker Compose is not required for discovering plain literal environment-file paths. Compose `include`/`extends` workflows still require separate consideration and are unsupported by the current test restore.
-
-### Upgrading existing service environment-file backups
-
-Versions through 0.3.19 did not automatically include service-level `env_file` inputs unless they were already covered by another backup source. Updating does not add missing files to existing snapshots. Create a new backup of affected groups before testing restore:
-
-```bash
-backupdock remote-backup docker-prod --project app --preseed
-backupdock restore --remote docker-prod --project app --as app-test --test --dry-run
-```
-
-BackupDock does not silently replace missing archived environment files with current production files or files from another snapshot.
-
-### Upgrading existing bind-volume backups
-
-Versions through 0.3.16 read the Docker mountpoint for local bind-backed volumes. After container stop, this could save only empty volume directories alongside Compose files and manifests. Small snapshots should therefore be checked for actual application and database files. Updating does not add missing data to existing snapshots.
-
-After updating both controller and source, inspect a dry-run and force preseed for the first new backup of an affected group:
-
-```bash
-backupdock remote-backup docker-prod --project app --dry-run
-backupdock remote-backup docker-prod --project app --preseed
-```
-
-Check the new snapshot's file listing and perform a restore test. Existing normal snapshots still satisfy the automatic preseed history check, so `--preseed` is explicitly recommended for this first corrected backup. Older preseed snapshots with different source paths are preserved by the normal safety rules for preseed cleanup.
-
-## Requirements
-
-- Linux
-- Python 3.11+
-- Docker Engine on source hosts
-- Restic
-- permission to access the Docker daemon and the host-side persistent data (normally run as root)
-- OpenSSH client on a backup server when using `remote-backup`
-
-Docker itself is never installed or modified by BackupDock.
-
-## Installation
-
-Clone the repository and run the installer as root:
+Install BackupDock:
 
 ```bash
 git clone https://github.com/disaster123/BackupDock.git
@@ -172,693 +27,158 @@ cd BackupDock
 sudo ./install.sh
 ```
 
-The installer:
-
-- installs missing Python/venv and Restic system dependencies on supported package managers,
-- creates `/opt/backupdock/venv`,
-- installs/upgrades BackupDock and all Python dependencies only inside that virtual environment,
-- creates `/usr/bin/backupdock` as a symlink to the venv command,
-- always installs or updates `/etc/backupdock/config.yaml.example` from the repository example,
-- never creates or overwrites `/etc/backupdock/config.yaml`,
-- creates `/var/lib/backupdock` for BackupDock state.
-
-Running the installer again after updating the Git checkout upgrades the installed version and refreshes the example configuration:
+Create `/etc/backupdock/config.yaml` from the installed example and configure a Restic repository and password file:
 
 ```bash
-git pull
-sudo ./install.sh
+sudo cp /etc/backupdock/config.yaml.example /etc/backupdock/config.yaml
+sudoedit /etc/backupdock/config.yaml
 ```
 
-Then BackupDock can be called directly:
+Then initialize the repository, inspect the discovered Docker data, preview the workflow, create the backup, and verify the snapshot:
 
 ```bash
+sudo backupdock init
 sudo backupdock inventory
+sudo backupdock backup --dry-run
+sudo backupdock backup
+sudo backupdock snapshots
 ```
 
-A permanent `/etc/backupdock/config.yaml` is required for normal local backups and on a remote backup controller. It is deliberately **not required on a source host that is used only through `remote-backup`**; that host receives a temporary controller-generated source configuration for each session.
+The snapshot table is the first visible success check. Review the backup output as well to confirm that the backup completed and all previously running containers restarted.
 
-### Uninstall
+For an exact first-run configuration using a local test repository, follow the [step-by-step BackupDock Quick Start](docs/quick-start.md). For production, use separate storage or [remote/controller mode](docs/remote-backup.md).
 
-Remove BackupDock itself while preserving configuration and state:
+## Docker Compose Backup Features
+
+- Automatic bind-mount and Docker-volume discovery
+- Compose projects used as consistency groups
+- Dependency-aware container stop and restart ordering
+- Incremental, compressed, and deduplicated storage through Restic
+- Local and backup-server-initiated remote operation
+- Optional live preseed pass to reduce first-backup downtime
+- Explicit host paths, project paths, exclusions, and ignored containers
+- Compact snapshot overview, retention, pruning, and repository checks
+- Isolated Compose restore tests using copied data and local-only ports
+- Dry-run validation before Docker or backup data is changed
+
+## What BackupDock Backs Up
+
+| Included | Not included |
+|---|---|
+| Bind mounts and supported Docker volumes | Docker images |
+| Compose files and the working-directory `.env` | Container writable filesystem layers |
+| Service-level `env_file` inputs | Unsupported plugin, network, NFS, CIFS, or block-device volumes |
+| Project-specific extra paths | Data stored outside discovered or configured persistent paths |
+| Explicit static host paths | In-place production restore orchestration |
+| Backup manifests for discovery and restore mapping | Automatic image archival |
+
+Unsupported or uninspectable selected volumes fail before containers are stopped instead of producing an apparently successful empty backup.
+
+Read [Docker Compose backup behavior](docs/backup-behavior.md) for discovery, grouping, supported volume types, metadata handling, and safety checks.
+
+## Local or Remote Docker Backups
+
+| | Local mode | Remote/controller mode |
+|---|---|---|
+| Backup starts on | Docker host | Backup server |
+| Permanent configuration | Docker host | Backup server only |
+| Repository access | Direct | Temporary reverse SSH tunnel |
+| Backup command | `backupdock backup` | `backupdock remote-backup NAME` |
+| Typical use | Source can reach repository | Controller initiates backups behind firewalls |
+
+Both modes use the same discovery, validation, Stop/Restic/Restart transaction, manifests, exclusions, preseed support, and dry-run logic.
+
+Use the [local Quick Start](docs/quick-start.md) for a first backup or the [remote backup guide](docs/remote-backup.md) for a central controller and append-only rest-server.
+
+## How Consistent Docker Backups Work
+
+For each selected Compose project, BackupDock:
+
+1. discovers containers and persistent data;
+2. validates dependencies, sources, exclusions, and storage overlap;
+3. records which containers are currently running;
+4. stops those containers in reverse dependency order;
+5. creates a tagged Restic snapshot and manifest;
+6. restarts exactly those containers in dependency order.
+
+Other Compose projects remain online. Containers that were already stopped remain stopped. Recovery is attempted after backup errors and handled interruption signals.
+
+## Everyday Commands
+
+| Task | Command |
+|---|---|
+| Inspect discovered projects and data | `backupdock inventory` |
+| Preview a local backup | `backupdock backup --dry-run` |
+| Run a local backup | `backupdock backup` |
+| Run one local project | `backupdock backup --project PROJECT` |
+| Run a remote backup | `backupdock remote-backup NAME` |
+| List normal snapshots | `backupdock snapshots` |
+| Check repository integrity | `backupdock check` |
+| Apply retention | `backupdock forget` |
+| Apply retention and reclaim storage | `backupdock forget --prune` |
+
+See the [command-line reference](docs/cli.md) for all documented workflows, snapshot columns, preseed behavior, and repository selection.
+
+## Test a Docker Compose Restore
+
+Preview an isolated restore of a complete Compose group:
 
 ```bash
-sudo ./uninstall.sh
+backupdock restore --remote docker-prod --project app --snapshot latest --as app-test --test --dry-run
 ```
 
-Remove BackupDock, configuration and state:
+Run the same command without `--dry-run` to restore copied data and start a separate test project. BackupDock uses its own data directory, internal network, disabled restart policies, and automatically assigned ports bound to `127.0.0.1`.
 
-```bash
-sudo ./uninstall.sh --purge
-```
+Read [Restore and Test Docker Compose Backups](docs/restore.md) before running the real restore. The guide covers local and remote targets, generated paths, supported Compose settings, validation, access, and cleanup.
 
-The uninstaller deliberately does not remove shared system packages such as Python or Restic.
+## Safety Guarantees
 
-## Installation for development
+- Discovery and safety validation complete before the first container is stopped.
+- Only the selected consistency group's previously running containers are stopped.
+- Dependency order is honored for stopping and restarting Compose services.
+- Restart is attempted after backup failure, interruption, or partial stop failure.
+- Existing stopped containers are never started by the backup.
+- Unsafe writable overlap across groups aborts instead of guessing.
+- Running ignored containers cannot silently write into selected backup data.
+- Dry-run uses the same orchestration path while suppressing mutations.
 
-For development, a local virtual environment can still be used:
+Forced process termination or host failure cannot run recovery logic. See the [security model](docs/security.md) and [detailed backup behavior](docs/backup-behavior.md).
+
+## Current Limitations
+
+- Linux and Python 3.11 or newer are required.
+- Docker images and container writable layers are not backed up.
+- In-place restores and standalone-container recreation are not implemented.
+- Isolated restore currently supports complete Compose groups with one container per service and an available image.
+- Special volume drivers and unsafe Compose options fail explicitly.
+- Scheduling is delegated to systemd, cron, or another external scheduler.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Quick Start](docs/quick-start.md)
+- [Installation and updates](docs/installation.md)
+- [Configuration reference](docs/configuration.md)
+- [Docker Compose backup behavior](docs/backup-behavior.md)
+- [Remote Docker backups](docs/remote-backup.md)
+- [Command-line reference](docs/cli.md)
+- [Scheduling and maintenance](docs/scheduling.md)
+- [Restore and recovery](docs/restore.md)
+- [Upgrade notes](docs/upgrading.md)
+- [Security model](docs/security.md)
+- [Development and tests](docs/development.md)
+
+## Development
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
+python -m unittest discover -s tests -v
 ```
 
-## Configuration
+See [Development and tests](docs/development.md) for all repository checks.
 
-The default configuration path for local/controller operation is:
+## License
 
-```text
-/etc/backupdock/config.yaml
-```
-
-A different file can be selected with `--config`.
-
-The repository contains [`config.yaml.example`](config.yaml.example). The installer always copies the current example to:
-
-```text
-/etc/backupdock/config.yaml.example
-```
-
-The installer deliberately does **not** create the real configuration. Create it explicitly when needed:
-
-```bash
-sudo cp /etc/backupdock/config.yaml.example /etc/backupdock/config.yaml
-sudo vim /etc/backupdock/config.yaml
-```
-
-If `/etc/backupdock/config.yaml` is missing and no alternative `--config` file is selected, normal local/controller commands write a warning to `stderr` and continue with built-in defaults where possible.
-
-`backup.state_dir`, `backup.include_compose_metadata`, and `restic.backup_args` are shared defaults used by both local and remote backup runs. Source-specific paths, exclusions, ignored containers, and project rules are scoped to the source host:
-
-- Local mode uses top-level `backup.host_paths`, `backup.exclude_paths`, `backup.exclude_volumes`, `backup.ignore_containers`, and `projects`.
-- Remote mode uses `remotes.<name>.host_paths`, `remotes.<name>.exclude_paths`, `remotes.<name>.exclude_volumes`, `remotes.<name>.ignore_containers`, and `remotes.<name>.projects`.
-
-This keeps the existing local-mode configuration compact while allowing one controller to manage multiple Docker hosts without mixing their source-specific rules.
-
-Minimal local example using Restic's standard environment variables:
-
-```yaml
-backup:
-  state_dir: "/var/lib/backupdock"
-  include_compose_metadata: true
-  host_paths: []
-  exclude_paths: []
-  exclude_volumes: []
-  ignore_containers: []
-
-projects: {}
-```
-
-Then provide the normal Restic environment:
-
-```bash
-export RESTIC_REPOSITORY='sftp:backup@example:/backups/docker-host'
-export RESTIC_PASSWORD_FILE='/root/.config/restic/password'
-```
-
-Alternatively the repository and password file can be configured directly:
-
-```yaml
-restic:
-  repository: "sftp:backup@example:/backups/docker-host"
-  password_file: "/root/.config/restic/password"
-```
-
-### Additional paths
-
-Docker-managed persistent data should normally require no configuration.
-
-For a local backup, project-specific data that Docker cannot discover can be attached explicitly:
-
-```yaml
-projects:
-  paperless:
-    extra_paths:
-      - "/some/additional/path"
-```
-
-Static local-host paths can be backed up separately without stopping containers:
-
-```yaml
-backup:
-  host_paths:
-    - "/etc/some-static-config"
-```
-
-For a remote source, put the equivalent settings below that remote instead:
-
-```yaml
-remotes:
-  docker-prod:
-    # connection and repository settings omitted here
-    host_paths:
-      - "/etc/some-static-config"
-    projects:
-      paperless:
-        extra_paths:
-          - "/some/additional/path"
-```
-
-`host_paths` backs up the explicitly supplied directories in full as a separate `host` snapshot while containers remain running. Paths may overlap data included in project snapshots; BackupDock does not split the root or automatically exclude container mount paths. Explicitly configured exclusions and Restic backup arguments still apply. For application-consistent backups of live container data, attach that data to its project instead. A separate host snapshot may include live copies of those same files and does not carry the stopped-container consistency guarantee.
-
-### Excluding Docker volumes
-
-Docker volumes can be excluded by their Docker volume name. This avoids depending on Docker's host-side mount path.
-
-For local mode, prefer a project-specific exclusion when the volume belongs to one Compose project:
-
-```yaml
-projects:
-  backup-service:
-    exclude_volumes:
-      - "backup-service_backups"
-```
-
-For remote mode, keep the rule with the remote host that owns the project:
-
-```yaml
-remotes:
-  docker-prod:
-    # connection and repository settings omitted here
-    projects:
-      backup-service:
-        exclude_volumes:
-          - "backup-service_backups"
-```
-
-The other volumes of that project remain part of the backup. Volume names can be copied directly from `backupdock inventory` on the corresponding source host.
-
-A source-wide exclusion is also available when needed. In local mode use `backup.exclude_volumes`; in remote mode use `remotes.<name>.exclude_volumes`.
-
-### Ignoring exceptional containers
-
-A running container created with Docker AutoRemove (`docker run --rm`, `HostConfig.AutoRemove=true`) cannot safely participate in the normal Stop/Backup/Restart transaction: Docker removes it when it exits, and anonymous volumes may also be removed. BackupDock therefore detects such containers before any selected container is stopped and aborts the backup.
-
-For an explicitly accepted exception, an exact Docker container name can be ignored. In local mode:
-
-```yaml
-backup:
-  ignore_containers:
-    - "temporary-worker"
-```
-
-For a remote source, keep the exception with that source:
-
-```yaml
-remotes:
-  docker-prod:
-    # connection and repository settings omitted here
-    ignore_containers:
-      - "temporary-worker"
-```
-
-An ignored container is not stopped and its own mounts are not selected as backup sources. This is deliberately not a way to bypass consistency protection: if a running ignored container has writable storage that overlaps data selected for a project backup, BackupDock still aborts before any stop operation. `backupdock inventory` marks both `auto-remove` and `ignored` containers and shows mounts skipped because of an ignored container.
-
-## Optional remote backups through a reverse SSH tunnel
-
-Local backups remain the default and continue to use `backupdock backup` exactly as before.
-
-For a backup server that is behind a firewall, BackupDock can instead run as the controller. The backup server initiates SSH to the Docker host and asks OpenSSH to create a loopback-only reverse forward on the source host. Restic still runs on the Docker host, but its REST repository URL points to that temporary loopback port and traffic is carried back through the SSH connection to an authenticated rest-server on the backup server.
-
-Recommended layout:
-
-```text
-backup server                         Docker source
--------------                         -------------
-/etc/backupdock/config.yaml           no permanent config required
-rest-server --append-only
-127.0.0.1:8000
-+ HTTP authentication
-       ^
-       | reverse SSH tunnel
-       +------------------------------ 127.0.0.1:18080
-                                        |
-                                        +-- restic
-                                        +-- BackupDock
-                                        +-- Docker
-```
-
-The rest-server should be bound only to loopback, require authentication, and run with `--append-only`. The source host can create new backup data during the tunnel session but cannot use the REST endpoint to delete or modify existing repository data. Repository maintenance such as `forget` and `prune` should be run locally on the backup server with normal repository access.
-
-Loopback binding prevents network clients on other hosts from reaching the REST endpoint, but it does not isolate the endpoint from other local processes on the backup server. Authentication is therefore kept enabled even though the service listens only on `127.0.0.1`.
-
-### Debian/Ubuntu controller setup
-
-On Debian 13 and Ubuntu releases that provide the `restic-rest-server` package, the packaged service can be used directly. It already provides the `restic-rest-server` system user, the `restic-rest-server.service` unit, `/etc/default/restic-rest-server`, and the default authentication file `/etc/restic-rest-server/users.htpasswd`; no separate service or custom systemd hardening is required for the BackupDock setup.
-
-Install rest-server and the `htpasswd` utility on the backup server:
-
-```bash
-apt update
-apt install -y restic-rest-server apache2-utils
-```
-
-Create a repository root owned by the dedicated service user. The path below is only an example and can be changed:
-
-```bash
-install -d \
-  -o restic-rest-server \
-  -g restic-rest-server \
-  -m 0700 \
-  /srv/backups/backupdock
-```
-
-Create a controller-only directory for secrets and generate separate REST authentication and Restic repository passwords for the example source `docker-prod`:
-
-```bash
-install -d -o root -g root -m 0700 /etc/backupdock/secrets
-
-python3 - <<'PY' > /etc/backupdock/secrets/docker-prod.rest-server-password
-import secrets
-print(secrets.token_urlsafe(32))
-PY
-
-python3 - <<'PY' > /etc/backupdock/secrets/docker-prod.repository-password
-import secrets
-print(secrets.token_urlsafe(32))
-PY
-
-chmod 0600 \
-  /etc/backupdock/secrets/docker-prod.rest-server-password \
-  /etc/backupdock/secrets/docker-prod.repository-password
-```
-
-Add the rest-server user to Debian/Ubuntu's packaged authentication file using the same REST authentication password. The clear-text password remains readable only by root on the controller; rest-server stores only its bcrypt hash:
-
-```bash
-htpasswd -B -i \
-  /etc/restic-rest-server/users.htpasswd \
-  docker-prod \
-  < /etc/backupdock/secrets/docker-prod.rest-server-password
-chown root:restic-rest-server /etc/restic-rest-server/users.htpasswd
-chmod 0640 /etc/restic-rest-server/users.htpasswd
-```
-
-Configure the packaged service:
-
-```bash
-vim /etc/default/restic-rest-server
-```
-
-For BackupDock's reverse-tunnel mode, a minimal configuration is:
-
-```ini
-LISTEN = 127.0.0.1:8000
-BACKUP_DIR = /srv/backups/backupdock
-ARGS = "\
-  --htpasswd-file /etc/restic-rest-server/users.htpasswd \
-  --append-only \
-"
-```
-
-Do **not** use `--no-auth` for this setup. The packaged service explicitly uses `/etc/restic-rest-server/users.htpasswd`, which remains readable by the dedicated service user through its `restic-rest-server` group membership.
-
-The Debian/Ubuntu package runs rest-server as its dedicated `restic-rest-server` user. It does not need root privileges: rest-server stores Restic repository objects, while ownership and permission metadata for the original files is handled by Restic and restored by Restic on the source/restore host.
-
-Start or restart the packaged service and verify the listener:
-
-```bash
-systemctl enable --now restic-rest-server
-systemctl restart restic-rest-server
-systemctl status restic-rest-server --no-pager
-ss -ltnp | grep ':8000'
-```
-
-The listener should be bound to `127.0.0.1:8000`, not `0.0.0.0:8000` or another externally reachable address.
-
-### Central configuration
-
-In remote mode, `/etc/backupdock/config.yaml` on the backup server is the single authoritative configuration. General BackupDock behavior remains under the top-level `backup` section, while source-specific paths, exclusions, ignored containers, and projects are stored below the corresponding `remotes.<name>` entry. This allows multiple heterogeneous Docker hosts to be managed from one controller configuration.
-
-The source-side session file is created below:
-
-```text
-/run/backupdock/session-<random>/config.yaml
-```
-
-The runtime directory and session directory are mode `0700`; the temporary configuration is mode `0600`. It is removed when the source-side command exits, including error paths.
-
-`restic.repository`, `restic.password_file`, `remotes`, controller-side retention access, and REST authentication credentials are not copied to the source configuration. The repository URL is generated from the temporary reverse tunnel. The Restic repository password and the separate REST authentication password are sent inside the SSH standard-input payload and are not written into the temporary YAML file.
-
-If `/etc/backupdock/config.yaml` nevertheless exists on a remote source host, BackupDock prints a warning such as:
-
-```text
-backupdock: warning: /etc/backupdock/config.yaml exists on the source host but is ignored for this remote backup; using the temporary controller-provided configuration
-```
-
-The file is **not loaded or merged**. This avoids having two competing configurations for the same remote backup.
-
-Example controller-side configuration on the backup server:
-
-```yaml
-backup:
-  state_dir: "/var/lib/backupdock"
-  include_compose_metadata: true
-
-remotes:
-  docker-prod:
-    ssh_target: "root@docker-prod.example"
-    password_file: "/etc/backupdock/secrets/docker-prod.repository-password"
-    repository_path: "docker-prod"
-    rest_server_username: "docker-prod"
-    rest_server_password_file: "/etc/backupdock/secrets/docker-prod.rest-server-password"
-    local_rest_server_host: "127.0.0.1"
-    local_rest_server_port: 8000
-    remote_tunnel_port: 18080
-
-    host_paths: []
-    exclude_paths: []
-    exclude_volumes: []
-    ignore_containers: []
-    projects:
-      backup-service:
-        exclude_volumes:
-          - "backup-service_backups"
-
-    source_command:
-      - "backupdock"
-    ssh_options:
-      - "-i"
-      - "/root/.ssh/backupdock"
-```
-
-Top-level `projects` and the source-specific fields inside top-level `backup` are used only by local mode. They are never copied into a remote source session. Only the selected remote's `host_paths`, exclusions, ignored containers, and `projects` are rendered into that source's temporary configuration.
-
-`local_rest_server_host` and `local_rest_server_port` are resolved on the backup server. `remote_tunnel_port` is opened by SSH on `127.0.0.1` of the Docker source for the lifetime of that SSH session only. `repository_path` becomes the path below the rest-server data root.
-
-After creating the controller configuration and password files, initialize that remote's Restic repository directly through BackupDock:
-
-```bash
-backupdock init --remote docker-prod
-```
-
-The command validates the selected remote configuration and both password files before invoking `restic init` against the controller-local rest-server. It does not require SSH to the source host.
-
-### Strict version check
-
-Before opening the reverse tunnel, reading the Restic repository password or REST authentication password, or sending the generated source configuration, the controller runs the internal source command `backupdock source-info` over SSH.
-
-The source returns machine-readable version/protocol information. Remote backup proceeds only when the source BackupDock version is **exactly equal** to the controller version and the remote protocol version matches. Any mismatch aborts before containers, Restic, tunnel credentials, or source configuration are touched.
-
-The source also validates the controller version/protocol embedded in the actual backup-session payload, protecting against a source update between the initial check and the backup command.
-
-Start the remote backup from the backup server:
-
-```bash
-backupdock remote-backup docker-prod
-```
-
-Or only one Compose project:
-
-```bash
-backupdock remote-backup docker-prod --project nextcloud
-```
-
-Dry-run is also available:
-
-```bash
-backupdock remote-backup docker-prod --dry-run
-```
-
-The controller does not put the Restic repository password or REST authentication password into the SSH command line or repository URL. It reads both configured password files on the backup server and sends the session payload through SSH standard input. The source process exposes them to Restic only through `RESTIC_PASSWORD`, `RESTIC_REST_USERNAME`, and `RESTIC_REST_PASSWORD`. Any source-side values for those variables, `RESTIC_PASSWORD_FILE`, or `RESTIC_PASSWORD_COMMAND` are ignored for this remote session and restored afterward.
-
-The source-side command is `backupdock source-backup`; it is normally invoked only by `remote-backup`. It loads only the temporary controller-provided configuration and then enters the same `_run_backup` path as a normal local backup. Discovery, dependency ordering, source validation, locking, Stop/Restic/Restart handling, manifests, preseed, and dry-run therefore remain shared rather than duplicated.
-
-Automatic retention is intentionally disabled for `source-backup`. Destructive retention operations must not be sent through the append-only endpoint.
-
-The controller and source handle `SIGINT`, `SIGHUP`, and `SIGTERM` without a Python traceback, returning exit codes 130, 129, and 143 respectively. Signal handlers are active before the controller's version check and before source discovery, and are restored when the command finishes. SSH remains non-interactive (`-T`); credentials still travel only through standard input.
-
-On interruption, BackupDock terminates and waits for its active SSH or Restic child, escalating to a kill after five seconds if needed. Restic is stopped before container recovery begins. During recovery, additional interruption signals are ignored so every restart candidate can be attempted. A broken output pipe cannot prevent container recovery; temporary source-session configuration and credential environment variables are cleaned up afterward.
-
-An SSH disconnect does not guarantee that OpenSSH delivers a signal to a non-PTY source process. Source recovery begins when it receives a handled signal, encounters a broken output pipe, or Restic reports a transport failure; it is not an acknowledgment from the source when the controller exits. Verify the actual SSH disconnect behavior on the deployment hosts. Forced process termination (`SIGKILL`) or host failure cannot run this cleanup.
-
-## CLI
-
-Inspect the discovered groups, sources, dependencies, AutoRemove state, ignored containers, and excluded Docker volumes:
-
-```bash
-backupdock inventory
-```
-
-Run the normal backup workflow in dry-run mode:
-
-```bash
-backupdock backup --dry-run
-```
-
-Dry-run uses the same discovery, source validation, dependency ordering, Restic preflight routine, group loop, stop/backup/restart transaction, host-path backup routine, and retention path as a real backup. The difference is at the execution boundary: mutating Docker actions, Restic commands, and manifest writes are printed instead of executed.
-
-This makes dry-run useful for checking the actual command and action sequence without stopping containers or writing backup data.
-
-Preview only one Compose project:
-
-```bash
-backupdock backup --project paperless --dry-run
-```
-
-Back up all groups sequentially:
-
-```bash
-backupdock backup
-```
-
-Back up only one Compose project:
-
-```bash
-backupdock backup --project paperless
-```
-
-Start a configured remote backup from a backup server:
-
-```bash
-backupdock remote-backup docker-prod
-```
-
-### Preseed large first backups
-
-For a large first backup, `--preseed` can reduce the period during which containers must remain stopped:
-
-```bash
-backupdock backup --preseed
-```
-
-or in controller mode:
-
-```bash
-backupdock remote-backup docker-prod --preseed
-```
-
-For each stateful group BackupDock first runs a Restic backup while the group's containers are still running. This snapshot is tagged `backupdock-preseed` and must **not** be treated as the consistency-guaranteed backup because files may change while it is being created. If the preseed fails, BackupDock aborts before stopping that group's containers.
-
-After a successful preseed, BackupDock stops the group normally and creates the final snapshot tagged `backupdock`. Restic can then reuse already stored data through its normal incremental/deduplication mechanisms, often reducing the amount of new data that must be transferred during downtime. Changed large files may still need to be read again during the final pass, so preseed reduces expected downtime but cannot guarantee a specific maximum.
-
-On append-only remote repositories the source cannot delete the preseed snapshot. It remains clearly separated by its tag and can be removed later during controller-side repository maintenance.
-
-### Live backup progress
-
-When BackupDock's output is attached to a TTY, real Restic backup operations automatically use Restic's JSON status stream and render a single updating progress line, for example:
-
-```text
-[compose:nextcloud] backup   34.8%  18.2 GiB / 52.3 GiB  12,481 / 31,205 files  ETA 04:17
-```
-
-The same applies to a preseed pass, where the phase is shown as `preseed`.
-
-Remote/controller mode deliberately keeps SSH in non-PTY mode (`ssh -T`) because the controller payload and credentials are sent over standard input. If the controller's stdout is a TTY, it asks the source-side BackupDock process to enable the same JSON progress renderer. The resulting carriage-return status line is forwarded through the existing SSH connection without allocating a remote terminal.
-
-When stdout is not a TTY, for example under systemd or when redirected to a file, BackupDock keeps Restic's normal non-interactive output path and does not emit a continuously rewritten progress line.
-
-The byte counters in the live line represent source data processed by Restic, not bytes transferred over the network or final repository growth. Deduplication and compression can make the amount actually stored much smaller.
-
-Initialize the configured local Restic repository:
-
-```bash
-backupdock init
-```
-
-Initialize the repository belonging to one configured remote on the controller:
-
-```bash
-backupdock init --remote docker-prod
-```
-
-List the latest normal BackupDock snapshot per host and group in a compact table, without source paths or raw tags:
-
-```bash
-backupdock snapshots
-```
-
-The table shows group, host, retained snapshot count (`SNAPS`), container count (`CONTAINERS`), snapshot time, source-data size (`SIZE`), stored group data (`GROUP STORED`), and snapshot ID. A summary counts how many known host/group pairs have their latest snapshot dated today. Times and the meaning of `today` use the local timezone of the machine running the command. Older groups remain visible in the default listing, so a missing recent snapshot is easier to spot. Groups that have never produced a normal snapshot cannot be inferred from repository history alone.
-
-`SNAPS` counts all retained normal snapshots for that host/group. `GROUP STORED` uses `restic stats --mode raw-data` over their explicit snapshot IDs, counting stored blobs once across that group's history after deduplication and compression. Both columns cover the whole retained group history even with `--today` or `--all`; unrelated hosts, other groups, and preseeds are excluded. Shared blobs can be referenced by several groups, so group sizes cannot be added to obtain total repository usage and do not indicate how much space deleting a group would reclaim. Pack overhead, keys, indexes, and unreferenced repository data are not included.
-
-`CONTAINERS` comes from the manifest archived in the displayed snapshot, including containers that were stopped or explicitly ignored. It describes the backed-up group, not current Docker state. In the default listing it is the latest snapshot's count; with `--all`, each historical row uses its own manifest. Host-path snapshots show zero. Missing, unreadable, or unrecognized manifests show `unknown`. The command locates the original manifest path from snapshot metadata; if only a containing directory was backed up, it uses `backup.state_dir/manifests` from the current configuration.
-
-The compact view reads group statistics and archived manifests in addition to the snapshot list. Large histories may take longer to inspect; an immediate status message announces the additional reads. No source-host SSH or Docker access is used. `--details` and `--json` retain their original full-listing behavior and skip these additional reads.
-
-```bash
-backupdock snapshots --today         # Latest snapshots whose timestamps are dated today
-backupdock snapshots --all           # Compact history of all normal snapshots
-backupdock snapshots --all --today   # All normal snapshots dated today
-backupdock snapshots --details       # Original detailed Restic listing, including paths
-backupdock snapshots --json          # Raw Restic JSON for all normal snapshots
-backupdock snapshots --remote docker-prod
-```
-
-`--details` and `--json` are alternative full-listing formats and cannot be combined with `--all` or `--today`. Preseed snapshots are excluded from the compact listing. Sizes describe processed source data, not repository space or network transfer; snapshots without size statistics show `unknown`.
-
-The snapshot timestamp records the start of that backup. An existing normal snapshot does not prove that Restic read every file without errors, that container recovery succeeded, or that the complete scheduled backup and maintenance sequence finished. Use the run log to confirm those outcomes; listing snapshots does not perform `restic check`.
-
-Check repository integrity:
-
-```bash
-backupdock check
-```
-
-Apply the configured retention policy:
-
-```bash
-backupdock forget
-```
-
-Or forget and prune:
-
-```bash
-backupdock forget --prune
-```
-
-## Safety behavior
-
-Before any container is stopped, BackupDock:
-
-1. discovers every container and persistent mount,
-2. groups containers into Compose/standalone consistency groups,
-3. validates Compose dependency ordering,
-4. checks for unsafe writable storage overlap between groups,
-5. rejects running AutoRemove containers that would have to be stopped,
-6. rejects writable overlap from running ignored containers into selected backup data,
-7. verifies the Restic repository is reachable.
-
-These checks happen before BackupDock starts changing container state. A safety failure therefore does not leave earlier projects stopped while a later unsafe project is discovered.
-
-For each group it records which containers are running. Running containers are stopped in reverse dependency order and backed up inside a guarded transaction. BackupDock does not override Docker's stop timing; the stop request is sent without a timeout argument so Docker applies the container's configured stop behavior. Restart is attempted in dependency order even after a backup failure, interruption, or partial stop failure. Containers that were already stopped are never added to the restart set.
-
-Dry-run deliberately follows this same orchestration code path. `DockerBackend` and `ResticRunner` switch only their execution behavior: Docker mutations and Restic subprocess calls are rendered as `DRY-RUN ...` output. Manifest generation follows the same routine but prints the target manifest path instead of writing it. The normal process lock is still acquired so the plan is not produced concurrently with another BackupDock run.
-
-A manifest describing the group, containers, dependency metadata, AutoRemove state, mount destinations, volume names, and host source paths is stored under BackupDock's state directory and included in the Restic snapshot during a real backup. Test restore uses this archived metadata to map each service's mounts to restored data.
-
-## Retention
-
-Retention is optional. Example:
-
-```yaml
-retention:
-  after_backup: false
-  prune: false
-  keep_daily: 14
-  keep_weekly: 8
-  keep_monthly: 12
-```
-
-Keeping `after_backup: false` avoids making every normal backup run perform repository maintenance. `backupdock forget` can be scheduled independently.
-
-`backupdock forget` first applies the configured retention policy to normal `backupdock` snapshots. It then removes a `backupdock-preseed` snapshot only if a remaining normal snapshot has the same hostname, BackupDock group tag, and source paths, and an equal or later timestamp. Preseeds without such a replacement remain available, including after an unsuccessful first consistent backup. Unrecognized or incomplete snapshot metadata is never used to authorize preseed removal. Preseeds do not participate in the normal retention selection.
-
-`backupdock forget --prune` runs pruning once, after both retention and preseed cleanup succeed. Without pruning, snapshot removal alone does not reclaim all unreferenced repository data.
-
-For `snapshots`, `check`, and `forget`, an explicit top-level `restic.repository` (including `RESTIC_REPOSITORY`) retains the existing local access behavior. Otherwise, a controller with exactly one remote automatically selects it. BackupDock reads `BACKUP_DIR` from `/etc/default/restic-rest-server`, appends that remote's `repository_path`, and uses the remote's repository `password_file`. The storage root and password do not need to be duplicated in the BackupDock configuration. Reads happen only when invoking these commands, so a missing service configuration does not affect `remote-backup` or inventory.
-
-With several remotes, select the repository explicitly:
-
-```bash
-backupdock snapshots --remote docker-prod
-backupdock check --remote docker-prod
-backupdock forget --remote docker-prod --prune
-```
-
-`--remote` explicitly selects the remote even if a top-level repository is configured. Selection applies to one repository per command; BackupDock does not silently clean every remote.
-
-If the packaged service uses another configuration file, set `restic.rest_server_config_file` to that file's path. Supported `BACKUP_DIR` assignments are literal absolute paths, optionally quoted and with whitespace or inline comments. The file is never executed or sourced. Missing, duplicate, relative, or shell-expanded values, a `--path` override, path traversal, a symlink escaping the root, or a missing repository `config` file cause an error before invoking Restic. Automatic discovery requires a loopback rest-server and does not inspect custom systemd command overrides or Docker mount mappings; configure an explicit local repository for those setups.
-
-For append-only remote backups, run retention locally on the backup server against the repository path rather than through `remote-backup`.
-
-## Scheduling
-
-BackupDock contains no scheduler. Example systemd unit and timer files are available in [`examples/`](examples/).
-
-For remote mode, schedule `backupdock remote-backup REMOTE_NAME` on the backup server. The reverse SSH tunnel then exists only for the duration of each scheduled backup.
-
-### Cron on the backup server
-
-A complete remote-mode example is available in [`examples/backupdock.cron`](examples/backupdock.cron). Replace `docker-prod` in the commands and lock-file names with your configured remote name, then install it as `/etc/cron.d/backupdock`:
-
-```bash
-sudo install -o root -g root -m 0644 examples/backupdock.cron /etc/cron.d/backupdock
-```
-
-The example contains:
-
-```cron
-SHELL=/bin/sh
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# Daily backup; apply retention and prune only after a successful backup.
-0 3 * * * root /usr/bin/flock -n /run/lock/backupdock-docker-prod.lock /bin/sh -c '/usr/bin/backupdock remote-backup docker-prod && /usr/bin/backupdock forget --remote docker-prod --prune' >> /var/log/backupdock.log 2>&1
-
-# Weekly repository check.
-0 12 * * 0 root /usr/bin/flock -n /run/lock/backupdock-docker-prod.lock /usr/bin/backupdock check --remote docker-prod >> /var/log/backupdock.log 2>&1
-```
-
-The daily job starts at 03:00 in the backup server's local timezone. After a successful backup, it applies the retention policy from `/etc/backupdock/config.yaml`, removes superseded preseeds, and prunes unreferenced data. Automatic preseed selection needs no extra flag. The weekly job checks the repository on Sundays at 12:00. SSH authentication must work unattended as `root`, without password or host-key confirmation prompts. Keep the final newline in the cron file; `/etc/cron.d/` entries require the `root` user field.
-
-BackupDock already uses a process lock around local/source backup orchestration, and Restic uses repository locks. The external `flock` is optional but recommended here: it covers the entire backup-and-maintenance sequence and serializes it with the weekly check. With `-n`, a job is skipped without waiting when the same lock is held. This lock coordinates only commands using that same file on the backup server; use the same `flock` wrapper for manual jobs if they must also be serialized. It does not remove stale Restic locks or replace `restic unlock`.
-
-Output and errors are appended to `/var/log/backupdock.log`:
-
-```bash
-sudo tail -f /var/log/backupdock.log
-```
-
-Configure log rotation for this file and separate failure monitoring as needed. Redirecting output to the log means this example does not send Cron output by email.
-
-## Isolated test restore
-
-Restore an entire Compose group, including its database, as a separate test project:
-
-```bash
-backupdock restore --remote docker-prod --project app --snapshot latest --as app-test --test --dry-run
-backupdock restore --remote docker-prod --project app --snapshot latest --as app-test --test
-```
-
-The controller reads normal snapshot metadata through the same local repository access used by `snapshots`. `latest` selects the latest normal `backupdock` snapshot of this exact Compose group; preseeds never qualify. Use `--snapshot SNAPSHOT_ID` for a specific snapshot. If the group has snapshots from multiple hosts, select the original hostname with `--host HOSTNAME`.
-
-With `--remote`, BackupDock restores on that remote's Docker host through the existing reverse SSH tunnel. Repository and REST credentials travel through standard input, and no permanent source configuration or intermediate data copy on the controller is needed. Update BackupDock on both hosts to the same version. To restore on another Docker host with the same BackupDock, Restic and Docker Compose installations, add `--ssh-target root@test-host`; controller SSH options and the source command remain those of the selected repository remote.
-
-Without `--remote`, restore runs on the local Docker host using the configured repository. This also requires Docker on the machine executing the command; a controller-only server should use `--remote`. On the target, Docker must use a local Unix socket; TCP Docker endpoints and a custom `DOCKER_CONTEXT` are refused. Compose commands explicitly select that socket so CLI context settings cannot redirect restored host paths to another daemon.
-
-The first implementation supports complete Compose groups with one container per service and an available `image` for every service. Docker Compose V2 must support `config --format json --no-interpolate --no-path-resolution`. The archived Compose file set, interpolation files and declared service environment files must be present in the selected snapshot. Variables inherited only from the original shell are not reconstructed. Missing data, excluded mounts, ignored containers, old volume metadata without a reliable backup source, build-only services, Compose `include`/`extends`, privileged/device/host-network settings and other unsupported service options fail before restoring persistent data or starting containers. File-backed Compose `secrets` and `configs` are not supported yet.
-
-Data is restored below `backup.state_dir/restores/NEW_NAME`, preserving original absolute paths beneath that directory. All archived bind and Docker-volume mounts become bind mounts of these restored copies, including local bind-backed volumes. Docker's production volume paths, explicit volume names and volume drivers are not reused. Mount sources must exist after restore and may not resolve outside the test directory. Existing restore directories and Docker projects are refused; use a fresh `--as` name for another test.
-
-The generated `compose.test.json` uses the new project name, removes explicit container names, build definitions and reverse-proxy labels, disables restart policies and joins services to one project-owned internal network. Existing service network aliases and container names remain DNS aliases only inside that test network, so common database references continue to work. Published ports receive automatic host ports bound to `127.0.0.1` on the target Docker host. Startup prints `docker compose ps` with the assigned ports. To access a web interface from another machine, forward the printed port through SSH, for example:
-
-```bash
-ssh -L 18080:127.0.0.1:ASSIGNED_PORT root@test-host
-# Open http://127.0.0.1:18080 on the SSH client's machine.
-```
-
-The internal network prevents ordinary external network access, so integrations such as outgoing mail may not work during the test. Application files, environment values and embedded URLs are restored as archived; BackupDock does not rewrite arbitrary application configuration or guarantee that every application works without adjustments. For stronger separation from the production Docker host, use a separate test host. Images and container writable layers are not backed up: required images must still be available, and floating image tags may resolve to a different version. Pin image versions/digests when reproducible restores are needed.
-
-`--dry-run` reads the snapshot, manifest and required configuration through Restic, uses private temporary files for Compose normalization, and checks project availability on the target Docker host. It prints mount/port mappings without creating the persistent restore directory or changing Docker resources. It therefore requires working repository authentication, SSH and Docker Compose access. Temporary files and session credentials are removed afterward.
-
-`--no-start` restores and prepares the project but leaves its containers uncreated, printing the start command for inspection. A normal test restore starts all services with `docker compose up -d --no-build`; successful startup means Docker accepted the project, not that application data or health has been verified. Check login, database content and representative files yourself. If startup fails or is interrupted, BackupDock attempts to remove only the test project's Docker resources and retains the restored data. Cleanup errors do not hide the original failure; inspect the project if cleanup cannot finish. SSH loss can delay source cleanup until the source observes transport failure, as with remote backup.
-
-After testing, stop the project on its Docker host using the command printed by BackupDock:
-
-```bash
-docker compose -p app-test -f /var/lib/backupdock/restores/app-test/compose.test.json down
-```
-
-Stopping does not delete restored data. Test containers are ordinary Compose containers and can be discovered by later backup runs; stop/remove the test project after validation if it should not become another backed-up group.
-
-In-place restores, standalone-container recreation and automatic image archival are not implemented yet. Existing Restic snapshots can also be restored manually with Restic.
+No license file has been published yet. Until a license is selected, normal copyright restrictions apply.
