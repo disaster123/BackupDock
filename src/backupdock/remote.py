@@ -232,3 +232,23 @@ class RemoteBackupController:
 
         if result.returncode != 0:
             raise RemoteBackupError(f"Remote backup failed with SSH exit code {result.returncode}")
+
+    def restore(self, snapshot: dict, project: str, name: str, *, dry_run: bool = False, no_start: bool = False) -> None:
+        from backupdock.restore import validate_test_name
+
+        validate_test_name(project, name)
+        self._check_remote_version()
+        command = self.command([], dry_run=False)
+        prefix = command[:-len(self.config.source_command) - 1]
+        source = [*self.config.source_command, "source-restore", "--project", project,
+                  "--snapshot", snapshot["id"], "--host", snapshot["hostname"], "--as", name, "--test"]
+        if dry_run:
+            source.append("--dry-run")
+        if no_start:
+            source.append("--no-start")
+        # OpenSSH concatenates remote arguments into a shell command.
+        command = [*prefix, shlex.join(source)]
+        print(f"BackupDock: preparing test restore on {self.config.ssh_target}", flush=True)
+        result = run_process(command, input=self._payload(dry_run=False), text=True, check=False)
+        if result.returncode:
+            raise RemoteBackupError(f"Remote test restore failed with SSH exit code {result.returncode}")

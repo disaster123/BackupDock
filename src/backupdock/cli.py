@@ -8,6 +8,8 @@ import shutil
 import signal
 import sys
 import tempfile
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from backupdock import __version__
@@ -21,6 +23,7 @@ from backupdock.models import BackupSource
 from backupdock.remote import REMOTE_PROTOCOL_VERSION, RemoteBackupController, RemoteBackupError
 from backupdock.restic import ResticError, ResticRunner
 from backupdock.processes import INTERRUPTION_SIGNALS
+from backupdock.restore import TestRestore, choose_snapshot, validate_test_name
 
 
 SOURCE_RUNTIME_DIR = Path("/run/backupdock")
@@ -71,6 +74,20 @@ def _parser() -> argparse.ArgumentParser:
     source_parser.add_argument("--preseed", action="store_true", help=argparse.SUPPRESS)
     source_parser.add_argument("--progress", action="store_true", help=argparse.SUPPRESS)
     source_parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
+
+    restore_parser = subparsers.add_parser("restore", help="Restore a Compose group as an isolated test project")
+    source_restore = subparsers.add_parser("source-restore", help=argparse.SUPPRESS)
+    source_restore.set_defaults(_internal_source_command=True)
+    for target in (restore_parser, source_restore):
+        target.add_argument("--project", required=True, help="Original Compose project name")
+        target.add_argument("--snapshot", default="latest", help="Normal snapshot ID or latest (default)")
+        target.add_argument("--host", help="Select the original snapshot hostname")
+        target.add_argument("--as", dest="test_name", required=True, help="New isolated test project name")
+        target.add_argument("--test", action="store_true", required=True, help="Explicitly select isolated test restore")
+        target.add_argument("--dry-run", action="store_true", help="Read archived configuration and show mappings without restoring or starting")
+        target.add_argument("--no-start", action="store_true", help="Restore and prepare the test project without starting containers")
+    restore_parser.add_argument("--remote", help="Repository remote; default target is its source Docker host")
+    restore_parser.add_argument("--ssh-target", help="Override the target Docker host, e.g. root@test-host (requires --remote)")
 
     init_parser = subparsers.add_parser("init", help="Initialize a local or remote Restic repository")
     init_parser.add_argument(
@@ -252,13 +269,8 @@ def _write_source_session_config(config_yaml: str) -> tuple[Path, Path]:
     return session_dir, config_path
 
 
-def _run_source_backup(
-    projects: list[str],
-    *,
-    dry_run: bool,
-    preseed: bool = False,
-    progress: bool = False,
-) -> None:
+@contextmanager
+def _source_session():
     repository_password, rest_server_username, rest_server_password, config_yaml = (
         _read_source_payload()
     )
@@ -266,7 +278,7 @@ def _run_source_backup(
     if DEFAULT_CONFIG_PATH.exists():
         print(
             f"backupdock: warning: {DEFAULT_CONFIG_PATH} exists on the source host but is ignored "
-            "for this remote backup; using the temporary controller-provided configuration",
+            "for this remote session; using the temporary controller-provided configuration",
             file=sys.stderr,
         )
 
@@ -286,16 +298,7 @@ def _run_source_backup(
         os.environ.pop("RESTIC_PASSWORD_COMMAND", None)
         os.environ["RESTIC_REST_USERNAME"] = rest_server_username
         os.environ["RESTIC_REST_PASSWORD"] = rest_server_password
-        if progress:
-            _run_backup(
-                source_config,
-                projects,
-                dry_run=dry_run,
-                preseed=preseed,
-                progress=True,
-            )
-        else:
-            _run_backup(source_config, projects, dry_run=dry_run, preseed=preseed)
+        yield source_config
     finally:
         for key, value in previous.items():
             if value is None:
@@ -303,6 +306,14 @@ def _run_source_backup(
             else:
                 os.environ[key] = value
         shutil.rmtree(session_dir, ignore_errors=True)
+
+
+def _run_source_backup(projects: list[str], *, dry_run: bool, preseed: bool = False, progress: bool = False) -> None:
+    with _source_session() as source_config:
+        if progress:
+            _run_backup(source_config, projects, dry_run=dry_run, preseed=preseed, progress=True)
+        else:
+            _run_backup(source_config, projects, dry_run=dry_run, preseed=preseed)
 
 
 def _source_info() -> None:
@@ -315,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
 
     previous_handlers = {}
     try:
-        if args.command in ("backup", "source-backup", "remote-backup"):
+        if args.command in ("backup", "source-backup", "remote-backup", "restore", "source-restore"):
             previous_handlers = {signum: signal.getsignal(signum) for signum in INTERRUPTION_SIGNALS}
             _install_signal_handlers()
         if args.command == "source-info":
@@ -331,7 +342,32 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "source-restore":
+            validate_test_name(args.project, args.test_name)
+            with _source_session() as source_config:
+                restic = ResticRunner(source_config.restic)
+                snapshot = choose_snapshot(restic, args.project, args.snapshot, args.host)
+                TestRestore(restic, source_config.backup.state_dir).run(snapshot, args.project, args.test_name, dry_run=args.dry_run, no_start=args.no_start)
+            return 0
+
         config = load_config(args.config)
+
+        if args.command == "restore":
+            validate_test_name(args.project, args.test_name)
+            if args.ssh_target and not args.remote:
+                raise ValueError("--ssh-target requires --remote")
+            restic = ResticRunner(maintenance_config(config, args.remote))
+            snapshot = choose_snapshot(restic, args.project, args.snapshot, args.host)
+            if args.remote:
+                remote = config.remotes[args.remote]
+                if args.ssh_target:
+                    if args.ssh_target.startswith("-") or any(c.isspace() for c in args.ssh_target):
+                        raise ValueError("--ssh-target must be one SSH hostname or user@hostname")
+                    remote = replace(remote, ssh_target=args.ssh_target)
+                RemoteBackupController(config, remote).restore(snapshot, args.project, args.test_name, dry_run=args.dry_run, no_start=args.no_start)
+            else:
+                TestRestore(restic, config.backup.state_dir).run(snapshot, args.project, args.test_name, dry_run=args.dry_run, no_start=args.no_start)
+            return 0
 
         if args.command == "remote-backup":
             remote_config = config.remotes.get(args.remote)
