@@ -40,18 +40,23 @@ def select_snapshots(snapshots: list, *, all_snapshots: bool, today: bool, now: 
     return selected, current, len(latest)
 
 
-def render_snapshots(records, *, current: int, groups: int, now: datetime, format_bytes) -> None:
+def render_snapshots(records, *, current: int, groups: int, now: datetime, format_bytes, group_stats, container_counts) -> None:
     if records:
-        rows = [("GROUP", "HOST", "SNAPSHOT TIME", "SIZE", "ID")]
+        rows = [("GROUP", "HOST", "SNAPS", "CONTAINERS", "SNAPSHOT TIME", "SIZE", "GROUP STORED", "ID")]
         for snapshot, timestamp, hostname, group in records:
             summary = snapshot.get("summary")
             size = summary.get("total_bytes_processed") if isinstance(summary, dict) else None
             size_text = format_bytes(size) if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else "unknown"
-            rows.append((group, hostname, timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S"), size_text, snapshot["id"][:8]))
+            count, stored = group_stats[(hostname, group)]
+            containers = container_counts.get(snapshot["id"])
+            rows.append((group, hostname, str(count), str(containers) if containers is not None else "unknown", timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S"), size_text, format_bytes(stored), snapshot["id"][:8]))
         widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
         for row in rows:
             print("  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip())
     else:
         print("No matching normal BackupDock snapshots.")
     print(f"\n{len(records)} snapshot(s) shown; {current}/{groups} known host/group(s) have their latest snapshot dated today ({now.date()}, local time).")
+    if records:
+        print("SNAPS / GROUP STORED cover all retained normal snapshots in each host/group, regardless of display filters.")
+        print("GROUP STORED counts referenced blobs after deduplication; shared data prevents adding group sizes. CONTAINERS is the snapshot manifest count.")
     print("Snapshot times do not confirm whole-run completion, container recovery, or repository checks; consult the run log.")

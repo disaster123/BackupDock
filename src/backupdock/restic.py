@@ -291,7 +291,47 @@ class ResticRunner:
             return
         self._run(args)
 
-    def snapshots(self, *, all_snapshots: bool = False, today: bool = False, details: bool = False, json_output: bool = False) -> None:
+    def _snapshot_container_count(self, snapshot: dict, group: str, manifest_dir: Path) -> int | None:
+        if group == "host":
+            return 0
+        slug = "".join(character if character.isalnum() or character in "-_." else "_" for character in group)
+        paths = snapshot.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(path, str) and Path(path).is_absolute() for path in paths):
+            return None
+        candidates = {path for path in paths if Path(path).parent.name == "manifests" and Path(path).name == f"{slug}.json"}
+        fallback = manifest_dir / f"{slug}.json"
+        if not candidates and any(fallback.is_relative_to(Path(path)) for path in paths):
+            candidates.add(str(fallback))
+        if len(candidates) != 1:
+            return None
+        try:
+            result = self._run(["dump", snapshot["id"], next(iter(candidates))], capture=True)
+            manifest = json.loads(result.stdout)
+            if not isinstance(manifest, dict) or manifest.get("schema") != 1:
+                return None
+            metadata = manifest.get("group")
+            containers = manifest.get("containers")
+            if not isinstance(metadata, dict) or metadata.get("key") != group or not isinstance(containers, list):
+                return None
+            identities = [container.get("id") if isinstance(container, dict) else None for container in containers]
+            if not all(isinstance(identity, str) and identity for identity in identities) or len(set(identities)) != len(identities):
+                return None
+            return len(identities)
+        except (ResticError, ValueError):
+            return None
+
+    def _snapshot_group_size(self, snapshot_ids: list[str]) -> int:
+        result = self._run(["stats", "--mode", "raw-data", "--json", *snapshot_ids], capture=True)
+        try:
+            stats = json.loads(result.stdout)
+            size = stats.get("total_size") if isinstance(stats, dict) else None
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                raise ValueError("invalid total_size")
+            return size
+        except ValueError as exc:
+            raise ResticError(f"Cannot calculate snapshot group size: {exc}") from exc
+
+    def snapshots(self, *, all_snapshots: bool = False, today: bool = False, details: bool = False, json_output: bool = False, manifest_dir: Path = Path("/var/lib/backupdock/manifests")) -> None:
         args = ["snapshots", "--tag", "backupdock"]
         if details:
             self._run(args)
@@ -308,9 +348,24 @@ class ResticRunner:
                 raise ValueError("Restic snapshots returned an unexpected JSON structure")
             now = datetime.now().astimezone()
             records, current, groups = select_snapshots(snapshots, all_snapshots=all_snapshots, today=today, now=now)
+            history, _, _ = select_snapshots(snapshots, all_snapshots=True, today=False, now=now)
         except ValueError as exc:
             raise ResticError(f"Cannot list snapshots: {exc}") from exc
-        render_snapshots(records, current=current, groups=groups, now=now, format_bytes=_format_bytes)
+        selected_groups = {record[2:] for record in records}
+        group_ids = {key: set() for key in selected_groups}
+        for snapshot, _, hostname, group in history:
+            if (hostname, group) in group_ids:
+                group_ids[(hostname, group)].add(snapshot["id"])
+        group_stats = {}
+        container_counts = {}
+        if records:
+            print("BackupDock: reading group statistics and container manifests", file=sys.stderr, flush=True)
+        for key, ids in sorted(group_ids.items()):
+            group_stats[key] = (len(ids), self._snapshot_group_size(sorted(ids)))
+        for snapshot, _, _, group in records:
+            if snapshot["id"] not in container_counts:
+                container_counts[snapshot["id"]] = self._snapshot_container_count(snapshot, group, manifest_dir)
+        render_snapshots(records, current=current, groups=groups, now=now, format_bytes=_format_bytes, group_stats=group_stats, container_counts=container_counts)
 
     def check(self) -> None:
         self._run(["check"])

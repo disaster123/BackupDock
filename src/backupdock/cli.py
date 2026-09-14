@@ -370,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "snapshots":
             if (args.details or args.json) and (args.all or args.today):
                 raise ValueError("--details and --json show the full listing; use --all/--today with the compact format")
-            restic.snapshots(all_snapshots=args.all, today=args.today, details=args.details, json_output=args.json)
+            restic.snapshots(all_snapshots=args.all, today=args.today, details=args.details, json_output=args.json, manifest_dir=config.backup.state_dir / "manifests")
             return 0
         if args.command == "check":
             restic.check()

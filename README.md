@@ -653,7 +653,13 @@ List the latest normal BackupDock snapshot per host and group in a compact table
 backupdock snapshots
 ```
 
-The table shows group, host, snapshot time, source-data size, and snapshot ID. A summary counts how many known host/group pairs have their latest snapshot dated today. Times and the meaning of `today` use the local timezone of the machine running the command. Older groups remain visible in the default listing, so a missing recent snapshot is easier to spot. Groups that have never produced a normal snapshot cannot be inferred from repository history alone.
+The table shows group, host, retained snapshot count (`SNAPS`), container count (`CONTAINERS`), snapshot time, source-data size (`SIZE`), stored group data (`GROUP STORED`), and snapshot ID. A summary counts how many known host/group pairs have their latest snapshot dated today. Times and the meaning of `today` use the local timezone of the machine running the command. Older groups remain visible in the default listing, so a missing recent snapshot is easier to spot. Groups that have never produced a normal snapshot cannot be inferred from repository history alone.
+
+`SNAPS` counts all retained normal snapshots for that host/group. `GROUP STORED` uses `restic stats --mode raw-data` over their explicit snapshot IDs, counting stored blobs once across that group's history after deduplication and compression. Both columns cover the whole retained group history even with `--today` or `--all`; unrelated hosts, other groups, and preseeds are excluded. Shared blobs can be referenced by several groups, so group sizes cannot be added to obtain total repository usage and do not indicate how much space deleting a group would reclaim. Pack overhead, keys, indexes, and unreferenced repository data are not included.
+
+`CONTAINERS` comes from the manifest archived in the displayed snapshot, including containers that were stopped or explicitly ignored. It describes the backed-up group, not current Docker state. In the default listing it is the latest snapshot's count; with `--all`, each historical row uses its own manifest. Host-path snapshots show zero. Missing, unreadable, or unrecognized manifests show `unknown`. The command locates the original manifest path from snapshot metadata; if only a containing directory was backed up, it uses `backup.state_dir/manifests` from the current configuration.
+
+The compact view reads group statistics and archived manifests in addition to the snapshot list. Large histories may take longer to inspect; an immediate status message announces the additional reads. No source-host SSH or Docker access is used. `--details` and `--json` retain their original full-listing behavior and skip these additional reads.
 
 ```bash
 backupdock snapshots --today         # Latest snapshots whose timestamps are dated today
