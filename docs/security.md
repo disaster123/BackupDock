@@ -1,6 +1,6 @@
 # BackupDock Security Model
 
-[Documentation index](README.md) · [Main README](../README.md)
+[Documentation index](https://github.com/disaster123/BackupDock/blob/main/docs/README.md) · [Main README](https://github.com/disaster123/BackupDock#readme)
 
 
 BackupDock requires privileged access to Docker and host-side persistent data. Treat its configuration, repository credentials, SSH keys, and restored data as sensitive.
@@ -21,7 +21,7 @@ BackupDock requires privileged access to Docker and host-side persistent data. T
 - Repository maintenance such as `forget` and `prune` runs locally on the controller, not through the append-only source endpoint.
 - Controller and source versions must match exactly before credentials or configuration are sent.
 
-See [Remote Docker Backups](remote-backup.md) for the complete tunnel and rest-server setup.
+See [Remote Docker Backups](https://github.com/disaster123/BackupDock/blob/main/docs/remote-backup.md) for the complete tunnel and rest-server setup.
 
 ## Container safety
 
@@ -29,7 +29,7 @@ Before stopping a container, BackupDock validates discovery, dependencies, selec
 
 Restart is attempted even after backup failure or interruption. Containers that were stopped before the run remain stopped. `SIGKILL` and host failure cannot execute recovery logic.
 
-See [Docker Compose Backup Behavior](backup-behavior.md#safety-behavior) for the full transaction model.
+See [Docker Compose Backup Behavior](https://github.com/disaster123/BackupDock/blob/main/docs/backup-behavior.md#safety-behavior) for the full transaction model.
 
 ## Restore isolation
 
