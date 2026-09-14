@@ -11,6 +11,9 @@ class MountInfo:
     destination: str
     volume_name: str | None = None
     read_only: bool = False
+    backup_source: str | None = None
+    backup_error: str | None = None
+    volume_driver: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

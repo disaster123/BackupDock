@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 
 from backupdock.models import ContainerInfo, MountInfo
+from backupdock.volumes import resolve_volume_mount
 
 
 COMPOSE_PROJECT = "com.docker.compose.project"
@@ -121,6 +122,7 @@ def parse_container_attrs(attrs: dict) -> ContainerInfo:
                 destination=destination,
                 volume_name=(str(mount.get("Name")) if mount.get("Name") else None),
                 read_only=not bool(mount.get("RW", True)),
+                volume_driver=(str(mount.get("Driver")) if mount.get("Driver") else None),
             )
         )
 
@@ -161,6 +163,25 @@ class DockerBackend:
         attrs_list = [container.attrs for container in docker_containers]
         containers = [parse_container_attrs(attrs) for attrs in attrs_list]
         containers = merge_runtime_dependencies(containers, attrs_list)
+        volume_attrs = {}
+        enriched = []
+        for container in containers:
+            mounts = []
+            for mount in container.mounts:
+                if mount.type == "volume":
+                    if not mount.volume_name:
+                        mount = replace(mount, backup_error="Docker volume has no inspectable name")
+                    else:
+                        if mount.volume_name not in volume_attrs:
+                            try:
+                                volume_attrs[mount.volume_name] = self._client.volumes.get(mount.volume_name).attrs
+                            except Exception:
+                                volume_attrs[mount.volume_name] = None
+                        attrs = volume_attrs[mount.volume_name]
+                        mount = resolve_volume_mount(mount, attrs) if attrs is not None else replace(mount, backup_error="Cannot inspect Docker volume driver options")
+                mounts.append(mount)
+            enriched.append(replace(container, mounts=tuple(mounts)))
+        containers = enriched
         self._containers_by_id = {container.id: container for container in containers if container.id}
         return containers
 

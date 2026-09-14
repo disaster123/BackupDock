@@ -96,7 +96,7 @@ def _order_group_containers(group: BackupGroup) -> None:
 
 def _source_from_mount(container: ContainerInfo, mount, *, required: bool) -> BackupSource:
     return BackupSource(
-        path=Path(mount.source),
+        path=Path(mount.backup_source or mount.source),
         kind=mount.type,
         container=container.name,
         destination=mount.destination,
@@ -142,14 +142,18 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                 if mount.type not in {"bind", "volume"}:
                     continue
                 if not mount.source:
+                    if mount.type == "volume" and mount.volume_name not in excluded_volumes:
+                        raise DiscoveryError(f"Cannot safely back up volume {mount.volume_name}: Docker reported no source path")
                     continue
 
-                source_path = Path(mount.source)
+                source_path = Path(mount.backup_source or mount.source)
                 if mount.type == "bind" and _special_bind_source(source_path):
                     logger.warning("Ignoring non-file bind mount source: %s", source_path)
                     continue
 
                 if container.ignored:
+                    if mount.backup_error and container.running and not mount.read_only:
+                        raise DiscoveryError(f"Cannot verify ignored writable volume {mount.volume_name}: {mount.backup_error}")
                     ignored_sources.append(_source_from_mount(container, mount, required=False))
                     continue
 
@@ -157,8 +161,11 @@ def discover_groups(containers: list[ContainerInfo], config: AppConfig) -> list[
                     excluded_sources.append(_source_from_mount(container, mount, required=False))
                     continue
 
-                if _excluded(source_path, exclusions):
+                if _excluded(source_path, exclusions) or _excluded(Path(mount.source), exclusions):
                     continue
+
+                if mount.backup_error:
+                    raise DiscoveryError(f"Cannot safely back up volume {mount.volume_name} in {group.key}: {mount.backup_error}")
 
                 sources.append(_source_from_mount(container, mount, required=True))
 

@@ -116,6 +116,25 @@ BackupDock reads the Docker daemon and discovers:
 
 There are **no built-in paths such as `/srv/files`, `/srv/docker-config`, `/opt/docker`, or `/var/lib/docker/volumes`**. Volume source paths come from Docker itself.
 
+BackupDock also inspects each named or anonymous volume's driver and options. Ordinary local volumes use their persistent host directory. Local bind-backed volumes (`o=bind` or `rbind`, `type` empty or `none`, and an absolute `device`) use the actual device directory, because Docker's volume mountpoint may be unmounted when the last container stops. The manifest preserves Docker's original mount source and records the resolved backup source. Mounted subdirectories are preserved. Exclusions by volume name remain unchanged; path exclusions recognize both the original and resolved path. Storage overlap and ignored-container writer checks use the resolved data path.
+
+Included volumes with uninspectable metadata, plugin drivers, or unsupported local mount options such as NFS, CIFS, or block-device filesystems abort discovery before any container stop. Explicitly excluded volumes are skipped; an ignored running container with an unresolved writable volume also fails because its storage overlap cannot be verified. These volume types need a separate supported backup strategy rather than reading a potentially empty Docker mountpoint.
+
+Docker images and the container writable filesystem layer are not included. Compose configuration and backed-up persistent data support recreating containers, provided their images can be pulled or rebuilt. Files stored only in the container layer need a separate backup strategy.
+
+### Upgrading existing bind-volume backups
+
+Versions through 0.3.16 read the Docker mountpoint for local bind-backed volumes. After container stop, this could save only empty volume directories alongside Compose files and manifests. Small snapshots should therefore be checked for actual application and database files. Updating does not add missing data to existing snapshots.
+
+After updating both controller and source, inspect a dry-run and force preseed for the first new backup of an affected group:
+
+```bash
+backupdock remote-backup docker-prod --project app --dry-run
+backupdock remote-backup docker-prod --project app --preseed
+```
+
+Check the new snapshot's file listing and perform a restore test. Existing normal snapshots still satisfy the automatic preseed history check, so `--preseed` is explicitly recommended for this first corrected backup. Older preseed snapshots with different source paths are preserved by the normal safety rules for preseed cleanup.
+
 ## Requirements
 
 - Linux
