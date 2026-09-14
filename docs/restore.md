@@ -33,12 +33,35 @@ The internal network prevents ordinary external network access, so integrations 
 
 `--no-start` restores and prepares the project but leaves its containers uncreated, printing the start command for inspection. A normal test restore starts all services with `docker compose up -d --no-build`; successful startup means Docker accepted the project, not that application data or health has been verified. Check login, database content and representative files yourself. If startup fails or is interrupted, BackupDock attempts to remove only the test project's Docker resources and retains the restored data. Cleanup errors do not hide the original failure; inspect the project if cleanup cannot finish. SSH loss can delay source cleanup until the source observes transport failure, as with remote backup.
 
-After testing, stop the project on its Docker host using the command printed by BackupDock:
+## Remove a test restore
+
+Run cleanup on the Docker host where the test project was created. `--volumes` also removes anonymous or project-owned volumes that an image may have created:
 
 ```bash
-docker compose -p app-test -f /var/lib/backupdock/restores/app-test/compose.test.json down
+sudo docker compose \
+  -p app-test \
+  -f /var/lib/backupdock/restores/app-test/compose.test.json \
+  down --volumes --remove-orphans
 ```
 
-Stopping does not delete restored data. Test containers are ordinary Compose containers and can be discovered by later backup runs; stop/remove the test project after validation if it should not become another backed-up group.
+Verify that no project containers, volumes, or networks remain:
+
+```bash
+sudo docker ps -a --filter label=com.docker.compose.project=app-test
+sudo docker volume ls --filter label=com.docker.compose.project=app-test
+sudo docker network ls --filter label=com.docker.compose.project=app-test
+```
+
+Each command should show only its heading. Then remove the restored data copy:
+
+```bash
+sudo rm -rf -- /var/lib/backupdock/restores/app-test
+```
+
+This removes the test containers, test network, project or anonymous test volumes, generated Compose configuration, and restored data. It does not remove Restic snapshots or production data.
+
+Images downloaded for the test may remain in Docker because other projects can share them. BackupDock's common `restore.lock` may also remain below the state directory and does not belong to a particular test restore.
+
+Test containers are ordinary Compose containers and can be discovered by later backup runs. Remove the test project after validation if it should not become another backed-up group.
 
 In-place restores, standalone-container recreation and automatic image archival are not implemented yet. Existing Restic snapshots can also be restored manually with Restic.
